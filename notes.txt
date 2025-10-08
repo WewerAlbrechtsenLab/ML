@@ -1,0 +1,15 @@
+
+## Notes
+
+- If we want to support other validation strategies (like kfold or holdout). ✅
+
+
+- Population proteomics → biological context for clinical thresholds?  include age/sex/BMI as covariates. ?
+
+- In multiclass classification choose between ordinal on nominal targets ? TBD
+
+- For preprocessing consider 15N normalization instaed of median normalization. TBD
+
+- additional plots
+sklearn.calibration_curve().
+Brier score = mean squared difference between predicted probabilities and true outcomes (lower = better).

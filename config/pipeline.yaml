@@ -1,0 +1,36 @@
+data_path: ../data/raw_data.tsv
+target_cols:
+  - combination
+task_type: binary
+feature_cols: null
+outer_splits: 5
+inner_splits: 2
+random_state: 42
+holdout_fraction: null 
+holdout_groups:
+  - MIS-C During Admission
+  - Sepsis
+  - Kawasaki
+  - MIS-C Full Recovery
+feature_selection: rfecv 
+model_registry:
+  logistic_regression:
+    classname: sklearn.linear_model.LogisticRegression
+    params:
+      max_iter: 5000
+      random_state: 42
+  decision_tree:
+    classname: sklearn.tree.DecisionTreeClassifier
+    params:
+      random_state: 42
+search_spaces:
+  logistic_regression:
+    estimator__C: [0.1, 0.5, 1.0]
+    estimator__solver: [liblinear, saga]
+    estimator__penalty: [l1, l2, elasticnet]
+  decision_tree:
+    estimator__criterion: [gini, entropy]
+    estimator__splitter: [best, random]
+    estimator__min_samples_leaf: [1, 5, 10]
+    estimator__class_weight: [null, balanced]
+output_dir: outputs
