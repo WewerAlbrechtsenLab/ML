@@ -33,4 +33,4 @@ search_spaces:
     estimator__splitter: [best, random]
     estimator__min_samples_leaf: [1, 5, 10]
     estimator__class_weight: [null, balanced]
-output_dir: outputs
+output_dir: ../outputs

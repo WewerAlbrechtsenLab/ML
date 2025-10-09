@@ -13,7 +13,7 @@ from sklearn.preprocessing import LabelEncoder
 
 from src.models.metrics import scoring_map
 from src.utils.config import PipelineConfig
-
+from functools import partial
 
 def build_outer_cv(config: PipelineConfig) -> StratifiedKFold:
     outer = getattr(config, "outer_splits", None)
@@ -269,7 +269,7 @@ class FixedFeatureSelector(BaseEstimator, TransformerMixin):
 def _build_pipeline(feature_selection: str, preprocessor, estimator, scoring: str | None = None, cv_splits: int = 5):
     steps = [("preprocess", clone(preprocessor))]
     if feature_selection == "univariate":
-        steps.append(("select", SelectKBest(score_func=mutual_info_classif)))
+        steps.append(("select", SelectKBest(score_func=partial(mutual_info_classif, random_state=PipelineConfig.random_state))))
     elif feature_selection == "rfe":
         steps.append(("rfe", RFE(estimator=clone(estimator))))
     elif feature_selection == "rfecv":
