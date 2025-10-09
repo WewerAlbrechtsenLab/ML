@@ -13,6 +13,7 @@ from sklearn.preprocessing import LabelEncoder
 
 from src.models.metrics import scoring_map
 from src.utils.config import PipelineConfig
+from src.utils.run_logger import log_training_run
 from functools import partial
 
 def build_outer_cv(config: PipelineConfig) -> StratifiedKFold:
@@ -470,4 +471,13 @@ def nested_cross_validate_models(
         by=f"mean_{primary_metric}", ascending=False
     ).reset_index(drop=True)
     leaderboard["fold_details"] = leaderboard["model"].map(fold_history)
+    try:
+        run_dir = log_training_run(
+            config=config,
+            leaderboard=leaderboard,
+            trained_models=best_estimators,
+        )
+        leaderboard.attrs["run_dir"] = str(run_dir)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to log training run: {exc}") from exc
     return leaderboard, best_estimators

@@ -1,0 +1,16 @@
+{
+  "run_id": "619985d4122e",
+  "run_directory": "/Users/annamelidi/Documents/Bispebjerg/ML/outputs/runs/619985d4122e",
+  "timestamp": "2025-10-09T11:48:00.658463+00:00",
+  "user": "annamelidi",
+  "random_state": 42,
+  "git_sha": "5aadbfccb46e657ea61eb724f20031704316814c",
+  "data_hash": "85f375d42ed3978facca5e4473f9f3389da74d8a401fa2cda58c43f683aba151",
+  "config_hash": "d9c42427c6a23ff489c45053b00a98a933034ebe8dd9ec7ba2cd6066fa221239",
+  "environment": {
+    "python": "3.9.6",
+    "numpy": "2.0.2",
+    "pandas": "2.3.3",
+    "scikit-learn": "1.6.1"
+  }
+}
