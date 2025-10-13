@@ -1,7 +1,7 @@
 {
   "best_model": {
     "best_params_full_fit": {
-      "estimator__C": 1.0,
+      "estimator__C": 0.5,
       "estimator__penalty": "l1",
       "estimator__solver": "liblinear"
     },
@@ -10,9 +10,43 @@
         "best_params": {
           "estimator__C": 1.0,
           "estimator__penalty": "l2",
-          "estimator__solver": "liblinear"
+          "estimator__solver": "saga"
         },
+        "confusion_matrix": [
+          [
+            4,
+            2
+          ],
+          [
+            0,
+            10
+          ]
+        ],
+        "confusion_matrix_labels": [
+          "MIS-C Acute Stage",
+          "VB"
+        ],
         "outer_fold": 0,
+        "roc_curve": {
+          "fpr": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "thresholds": [
+            Infinity,
+            0.9991010372228518,
+            0.9086460265331753,
+            0.023592417497431524
+          ],
+          "tpr": [
+            0.0,
+            0.1,
+            1.0,
+            1.0
+          ]
+        },
         "selected_feature_count": 58,
         "selected_features": [
           "numeric__ACTB~P60709",
@@ -84,7 +118,41 @@
           "estimator__penalty": "l1",
           "estimator__solver": "liblinear"
         },
+        "confusion_matrix": [
+          [
+            5,
+            1
+          ],
+          [
+            0,
+            10
+          ]
+        ],
+        "confusion_matrix_labels": [
+          "MIS-C Acute Stage",
+          "VB"
+        ],
         "outer_fold": 1,
+        "roc_curve": {
+          "fpr": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "thresholds": [
+            Infinity,
+            0.9011590164721436,
+            0.5967986780746156,
+            0.22988917292174615
+          ],
+          "tpr": [
+            0.0,
+            0.1,
+            1.0,
+            1.0
+          ]
+        },
         "selected_feature_count": 2,
         "selected_features": [
           "numeric__FCGR3A~P08637",
@@ -96,11 +164,51 @@
       },
       {
         "best_params": {
-          "estimator__C": 1.0,
+          "estimator__C": 0.5,
           "estimator__penalty": "l2",
           "estimator__solver": "liblinear"
         },
+        "confusion_matrix": [
+          [
+            4,
+            1
+          ],
+          [
+            0,
+            10
+          ]
+        ],
+        "confusion_matrix_labels": [
+          "MIS-C Acute Stage",
+          "VB"
+        ],
         "outer_fold": 2,
+        "roc_curve": {
+          "fpr": [
+            0.0,
+            0.0,
+            0.0,
+            0.2,
+            0.2,
+            1.0
+          ],
+          "thresholds": [
+            Infinity,
+            0.9953501562596456,
+            0.6906137193302702,
+            0.672485415886711,
+            0.520908273807834,
+            0.2548877821009886
+          ],
+          "tpr": [
+            0.0,
+            0.1,
+            0.6,
+            0.6,
+            1.0,
+            1.0
+          ]
+        },
         "selected_feature_count": 3,
         "selected_features": [
           "numeric__CRP~P02741",
@@ -113,19 +221,53 @@
       },
       {
         "best_params": {
-          "estimator__C": 0.5,
-          "estimator__penalty": "l2",
+          "estimator__C": 1.0,
+          "estimator__penalty": "l1",
           "estimator__solver": "liblinear"
         },
+        "confusion_matrix": [
+          [
+            5,
+            0
+          ],
+          [
+            0,
+            10
+          ]
+        ],
+        "confusion_matrix_labels": [
+          "MIS-C Acute Stage",
+          "VB"
+        ],
         "outer_fold": 3,
+        "roc_curve": {
+          "fpr": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "thresholds": [
+            Infinity,
+            0.9672001385373065,
+            0.7760325203777508,
+            0.09357955925778762
+          ],
+          "tpr": [
+            0.0,
+            0.1,
+            1.0,
+            1.0
+          ]
+        },
         "selected_feature_count": 3,
         "selected_features": [
           "numeric__FCGBP~Q9Y6R7",
           "numeric__FCGR3A~P08637",
           "numeric__LCP1~P13796"
         ],
-        "test_f1_weighted": 0.9312169312169313,
-        "test_mcc": 0.8528028654224417,
+        "test_f1_weighted": 1.0,
+        "test_mcc": 1.0,
         "test_roc_auc": 1.0
       },
       {
@@ -134,7 +276,47 @@
           "estimator__penalty": "l2",
           "estimator__solver": "liblinear"
         },
+        "confusion_matrix": [
+          [
+            4,
+            1
+          ],
+          [
+            0,
+            10
+          ]
+        ],
+        "confusion_matrix_labels": [
+          "MIS-C Acute Stage",
+          "VB"
+        ],
         "outer_fold": 4,
+        "roc_curve": {
+          "fpr": [
+            0.0,
+            0.0,
+            0.0,
+            0.2,
+            0.2,
+            1.0
+          ],
+          "thresholds": [
+            Infinity,
+            0.981441952148799,
+            0.6486608704359141,
+            0.6470242300127674,
+            0.5124765316608968,
+            0.09603371214307424
+          ],
+          "tpr": [
+            0.0,
+            0.1,
+            0.8,
+            0.8,
+            1.0,
+            1.0
+          ]
+        },
         "selected_feature_count": 105,
         "selected_features": [
           "numeric__ACTA2~P62736",
@@ -248,8 +430,8 @@
         "test_roc_auc": 0.9600000000000001
       }
     ],
-    "mean_f1_weighted": 0.9195959595959596,
-    "mean_mcc": 0.8348305737091488,
+    "mean_f1_weighted": 0.9333525733525734,
+    "mean_mcc": 0.8642700006246604,
     "mean_roc_auc": 0.976,
     "model": "logistic_regression",
     "primary_metric": "f1_weighted",
@@ -261,14 +443,14 @@
       "numeric__LCP1~P13796",
       "numeric__SERPINA3~P01011"
     ],
-    "std_f1_weighted": 0.028820556821258884,
-    "std_mcc": 0.05059412256320343,
+    "std_f1_weighted": 0.04665307761441227,
+    "std_mcc": 0.09064159886334512,
     "std_roc_auc": 0.03577708763999661
   },
   "all_models": [
     {
       "best_params_full_fit": {
-        "estimator__C": 1.0,
+        "estimator__C": 0.5,
         "estimator__penalty": "l1",
         "estimator__solver": "liblinear"
       },
@@ -277,9 +459,43 @@
           "best_params": {
             "estimator__C": 1.0,
             "estimator__penalty": "l2",
-            "estimator__solver": "liblinear"
+            "estimator__solver": "saga"
           },
+          "confusion_matrix": [
+            [
+              4,
+              2
+            ],
+            [
+              0,
+              10
+            ]
+          ],
+          "confusion_matrix_labels": [
+            "MIS-C Acute Stage",
+            "VB"
+          ],
           "outer_fold": 0,
+          "roc_curve": {
+            "fpr": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "thresholds": [
+              Infinity,
+              0.9991010372228518,
+              0.9086460265331753,
+              0.023592417497431524
+            ],
+            "tpr": [
+              0.0,
+              0.1,
+              1.0,
+              1.0
+            ]
+          },
           "selected_feature_count": 58,
           "selected_features": [
             "numeric__ACTB~P60709",
@@ -351,7 +567,41 @@
             "estimator__penalty": "l1",
             "estimator__solver": "liblinear"
           },
+          "confusion_matrix": [
+            [
+              5,
+              1
+            ],
+            [
+              0,
+              10
+            ]
+          ],
+          "confusion_matrix_labels": [
+            "MIS-C Acute Stage",
+            "VB"
+          ],
           "outer_fold": 1,
+          "roc_curve": {
+            "fpr": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "thresholds": [
+              Infinity,
+              0.9011590164721436,
+              0.5967986780746156,
+              0.22988917292174615
+            ],
+            "tpr": [
+              0.0,
+              0.1,
+              1.0,
+              1.0
+            ]
+          },
           "selected_feature_count": 2,
           "selected_features": [
             "numeric__FCGR3A~P08637",
@@ -363,11 +613,51 @@
         },
         {
           "best_params": {
-            "estimator__C": 1.0,
+            "estimator__C": 0.5,
             "estimator__penalty": "l2",
             "estimator__solver": "liblinear"
           },
+          "confusion_matrix": [
+            [
+              4,
+              1
+            ],
+            [
+              0,
+              10
+            ]
+          ],
+          "confusion_matrix_labels": [
+            "MIS-C Acute Stage",
+            "VB"
+          ],
           "outer_fold": 2,
+          "roc_curve": {
+            "fpr": [
+              0.0,
+              0.0,
+              0.0,
+              0.2,
+              0.2,
+              1.0
+            ],
+            "thresholds": [
+              Infinity,
+              0.9953501562596456,
+              0.6906137193302702,
+              0.672485415886711,
+              0.520908273807834,
+              0.2548877821009886
+            ],
+            "tpr": [
+              0.0,
+              0.1,
+              0.6,
+              0.6,
+              1.0,
+              1.0
+            ]
+          },
           "selected_feature_count": 3,
           "selected_features": [
             "numeric__CRP~P02741",
@@ -380,19 +670,53 @@
         },
         {
           "best_params": {
-            "estimator__C": 0.5,
-            "estimator__penalty": "l2",
+            "estimator__C": 1.0,
+            "estimator__penalty": "l1",
             "estimator__solver": "liblinear"
           },
+          "confusion_matrix": [
+            [
+              5,
+              0
+            ],
+            [
+              0,
+              10
+            ]
+          ],
+          "confusion_matrix_labels": [
+            "MIS-C Acute Stage",
+            "VB"
+          ],
           "outer_fold": 3,
+          "roc_curve": {
+            "fpr": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "thresholds": [
+              Infinity,
+              0.9672001385373065,
+              0.7760325203777508,
+              0.09357955925778762
+            ],
+            "tpr": [
+              0.0,
+              0.1,
+              1.0,
+              1.0
+            ]
+          },
           "selected_feature_count": 3,
           "selected_features": [
             "numeric__FCGBP~Q9Y6R7",
             "numeric__FCGR3A~P08637",
             "numeric__LCP1~P13796"
           ],
-          "test_f1_weighted": 0.9312169312169313,
-          "test_mcc": 0.8528028654224417,
+          "test_f1_weighted": 1.0,
+          "test_mcc": 1.0,
           "test_roc_auc": 1.0
         },
         {
@@ -401,7 +725,47 @@
             "estimator__penalty": "l2",
             "estimator__solver": "liblinear"
           },
+          "confusion_matrix": [
+            [
+              4,
+              1
+            ],
+            [
+              0,
+              10
+            ]
+          ],
+          "confusion_matrix_labels": [
+            "MIS-C Acute Stage",
+            "VB"
+          ],
           "outer_fold": 4,
+          "roc_curve": {
+            "fpr": [
+              0.0,
+              0.0,
+              0.0,
+              0.2,
+              0.2,
+              1.0
+            ],
+            "thresholds": [
+              Infinity,
+              0.981441952148799,
+              0.6486608704359141,
+              0.6470242300127674,
+              0.5124765316608968,
+              0.09603371214307424
+            ],
+            "tpr": [
+              0.0,
+              0.1,
+              0.8,
+              0.8,
+              1.0,
+              1.0
+            ]
+          },
           "selected_feature_count": 105,
           "selected_features": [
             "numeric__ACTA2~P62736",
@@ -515,8 +879,8 @@
           "test_roc_auc": 0.9600000000000001
         }
       ],
-      "mean_f1_weighted": 0.9195959595959596,
-      "mean_mcc": 0.8348305737091488,
+      "mean_f1_weighted": 0.9333525733525734,
+      "mean_mcc": 0.8642700006246604,
       "mean_roc_auc": 0.976,
       "model": "logistic_regression",
       "primary_metric": "f1_weighted",
@@ -528,8 +892,8 @@
         "numeric__LCP1~P13796",
         "numeric__SERPINA3~P01011"
       ],
-      "std_f1_weighted": 0.028820556821258884,
-      "std_mcc": 0.05059412256320343,
+      "std_f1_weighted": 0.04665307761441227,
+      "std_mcc": 0.09064159886334512,
       "std_roc_auc": 0.03577708763999661
     },
     {
@@ -547,7 +911,38 @@
             "estimator__min_samples_leaf": 1,
             "estimator__splitter": "random"
           },
+          "confusion_matrix": [
+            [
+              5,
+              1
+            ],
+            [
+              2,
+              8
+            ]
+          ],
+          "confusion_matrix_labels": [
+            "MIS-C Acute Stage",
+            "VB"
+          ],
           "outer_fold": 0,
+          "roc_curve": {
+            "fpr": [
+              0.0,
+              0.16666666666666666,
+              1.0
+            ],
+            "thresholds": [
+              Infinity,
+              1.0,
+              0.0
+            ],
+            "tpr": [
+              0.0,
+              0.8,
+              1.0
+            ]
+          },
           "selected_feature_count": 1,
           "selected_features": [
             "numeric__FCGR3A~P08637"
@@ -558,12 +953,43 @@
         },
         {
           "best_params": {
-            "estimator__class_weight": null,
+            "estimator__class_weight": "balanced",
             "estimator__criterion": "gini",
             "estimator__min_samples_leaf": 1,
             "estimator__splitter": "best"
           },
+          "confusion_matrix": [
+            [
+              5,
+              1
+            ],
+            [
+              0,
+              10
+            ]
+          ],
+          "confusion_matrix_labels": [
+            "MIS-C Acute Stage",
+            "VB"
+          ],
           "outer_fold": 1,
+          "roc_curve": {
+            "fpr": [
+              0.0,
+              0.16666666666666666,
+              1.0
+            ],
+            "thresholds": [
+              Infinity,
+              1.0,
+              0.0
+            ],
+            "tpr": [
+              0.0,
+              1.0,
+              1.0
+            ]
+          },
           "selected_feature_count": 1,
           "selected_features": [
             "numeric__FCGR3A~P08637"
@@ -574,12 +1000,49 @@
         },
         {
           "best_params": {
-            "estimator__class_weight": null,
+            "estimator__class_weight": "balanced",
             "estimator__criterion": "gini",
             "estimator__min_samples_leaf": 10,
             "estimator__splitter": "random"
           },
+          "confusion_matrix": [
+            [
+              5,
+              0
+            ],
+            [
+              2,
+              8
+            ]
+          ],
+          "confusion_matrix_labels": [
+            "MIS-C Acute Stage",
+            "VB"
+          ],
           "outer_fold": 2,
+          "roc_curve": {
+            "fpr": [
+              0.0,
+              0.0,
+              0.0,
+              0.4,
+              1.0
+            ],
+            "thresholds": [
+              Infinity,
+              1.0,
+              0.8319327731092436,
+              0.2558139534883721,
+              0.0
+            ],
+            "tpr": [
+              0.0,
+              0.6,
+              0.8,
+              1.0,
+              1.0
+            ]
+          },
           "selected_feature_count": 101,
           "selected_features": [
             "numeric__F13B~P05160",
@@ -690,12 +1153,46 @@
         },
         {
           "best_params": {
-            "estimator__class_weight": null,
-            "estimator__criterion": "entropy",
+            "estimator__class_weight": "balanced",
+            "estimator__criterion": "gini",
             "estimator__min_samples_leaf": 5,
             "estimator__splitter": "random"
           },
+          "confusion_matrix": [
+            [
+              4,
+              1
+            ],
+            [
+              1,
+              9
+            ]
+          ],
+          "confusion_matrix_labels": [
+            "MIS-C Acute Stage",
+            "VB"
+          ],
           "outer_fold": 3,
+          "roc_curve": {
+            "fpr": [
+              0.0,
+              0.0,
+              0.2,
+              1.0
+            ],
+            "thresholds": [
+              Infinity,
+              1.0,
+              0.5238095238095237,
+              0.03536977491961414
+            ],
+            "tpr": [
+              0.0,
+              0.9,
+              0.9,
+              1.0
+            ]
+          },
           "selected_feature_count": 2,
           "selected_features": [
             "numeric__ITIH3~Q06033",
@@ -708,11 +1205,45 @@
         {
           "best_params": {
             "estimator__class_weight": null,
-            "estimator__criterion": "gini",
+            "estimator__criterion": "entropy",
             "estimator__min_samples_leaf": 5,
             "estimator__splitter": "best"
           },
+          "confusion_matrix": [
+            [
+              3,
+              2
+            ],
+            [
+              3,
+              7
+            ]
+          ],
+          "confusion_matrix_labels": [
+            "MIS-C Acute Stage",
+            "VB"
+          ],
           "outer_fold": 4,
+          "roc_curve": {
+            "fpr": [
+              0.0,
+              0.4,
+              0.4,
+              1.0
+            ],
+            "thresholds": [
+              Infinity,
+              1.0,
+              0.2,
+              0.0
+            ],
+            "tpr": [
+              0.0,
+              0.7,
+              0.9,
+              1.0
+            ]
+          },
           "selected_feature_count": 128,
           "selected_features": [
             "numeric__C8G~P07360",
