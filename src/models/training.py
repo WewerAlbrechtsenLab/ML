@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin, clone
 from sklearn.feature_selection import RFE, RFECV, SelectKBest, mutual_info_classif
-from sklearn.metrics import get_scorer
-from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.metrics import confusion_matrix, get_scorer, roc_curve
+from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder
 
@@ -374,9 +374,9 @@ def nested_cross_validate_models(
                     k: v for k, v in param_grid.items() if k != "rfe__n_features_to_select"
                 }
 
-            search = GridSearchCV(
+            search = RandomizedSearchCV(
                 pipeline,
-                param_grid=param_grid,
+                param_distributions=param_grid,
                 scoring=scoring,
                 refit=primary_metric,
                 cv=inner_cv,
@@ -390,6 +390,70 @@ def nested_cross_validate_models(
                 "outer_fold": fold_idx,
                 "best_params": search.best_params_,
             }
+
+            classes = getattr(best_pipeline, "classes_", None)
+            if classes is None and hasattr(best_pipeline, "named_steps"):
+                estimator_step = best_pipeline.named_steps.get("estimator")
+                classes = getattr(estimator_step, "classes_", None)
+
+            try:
+                y_pred = best_pipeline.predict(X_test)
+            except Exception:
+                y_pred = None
+            else:
+                if label_encoder is not None:
+                    label_range = np.arange(len(label_encoder.classes_))
+                    cm = confusion_matrix(y_test, y_pred, labels=label_range)
+                    cm_labels = label_encoder.inverse_transform(label_range).tolist()
+                else:
+                    if classes is not None:
+                        label_values = list(classes)
+                    else:
+                        merged = np.concatenate([y_train.to_numpy(), y_test.to_numpy()])
+                        label_values = list(pd.Index(np.unique(merged)))
+                    cm = confusion_matrix(y_test, y_pred, labels=label_values)
+                    cm_labels = label_values
+                cm_labels = [
+                    label.item() if isinstance(label, np.generic) else label for label in cm_labels
+                ]
+                fold_result["confusion_matrix"] = cm.tolist()
+                fold_result["confusion_matrix_labels"] = cm_labels
+
+            roc_curve_payload = None
+            if config.task_type == "binary" and hasattr(best_pipeline, "predict_proba"):
+                proba = None
+                try:
+                    proba = best_pipeline.predict_proba(X_test)
+                except Exception:
+                    proba = None
+                if proba is not None:
+                    proba = np.asarray(proba)
+                    if proba.ndim == 2 and proba.shape[1] > 1:
+                        if classes is None and hasattr(best_pipeline, "named_steps"):
+                            estimator = best_pipeline.named_steps.get("estimator")
+                            classes = getattr(estimator, "classes_", None)
+                        class_list = list(classes) if classes is not None else None
+                        pos_index = -1
+                        if class_list is not None:
+                            if 1 in class_list:
+                                pos_index = class_list.index(1)
+                        if pos_index < 0:
+                            pos_index = proba.shape[1] - 1
+                        pos_scores = proba[:, pos_index]
+                    else:
+                        pos_scores = proba.ravel()
+                    try:
+                        fpr, tpr, thresholds = roc_curve(y_test, pos_scores)
+                    except ValueError:
+                        roc_curve_payload = None
+                    else:
+                        roc_curve_payload = {
+                            "fpr": fpr.tolist(),
+                            "tpr": tpr.tolist(),
+                            "thresholds": thresholds.tolist(),
+                        }
+            if roc_curve_payload is not None:
+                fold_result["roc_curve"] = roc_curve_payload
 
             feature_count = _selected_feature_count(feature_selection, best_pipeline)
             if feature_count is None:
@@ -428,9 +492,9 @@ def nested_cross_validate_models(
                 if k != "rfe__n_features_to_select"
             }
 
-        final_search = GridSearchCV(
+        final_search = RandomizedSearchCV(
             final_pipeline,
-            param_grid=final_param_grid,
+            param_distributions=final_param_grid,
             scoring=scoring,
             refit=primary_metric,
             cv=inner_cv,

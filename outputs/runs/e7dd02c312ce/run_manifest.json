@@ -1,10 +1,10 @@
 {
-  "run_id": "619985d4122e",
-  "run_directory": "/Users/annamelidi/Documents/Bispebjerg/ML/outputs/runs/619985d4122e",
-  "timestamp": "2025-10-09T11:48:00.658463+00:00",
+  "run_id": "e7dd02c312ce",
+  "run_directory": "/Users/annamelidi/Documents/Bispebjerg/ML/outputs/runs/e7dd02c312ce",
+  "timestamp": "2025-10-13T11:58:06.004449+00:00",
   "user": "annamelidi",
   "random_state": 42,
-  "git_sha": "5aadbfccb46e657ea61eb724f20031704316814c",
+  "git_sha": "5c8cffa3595b67a8acb327efcc4457c6db93a5d0",
   "data_hash": "85f375d42ed3978facca5e4473f9f3389da74d8a401fa2cda58c43f683aba151",
   "config_hash": "d9c42427c6a23ff489c45053b00a98a933034ebe8dd9ec7ba2cd6066fa221239",
   "environment": {

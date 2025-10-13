@@ -10,9 +10,8 @@ from typing import Any, Dict, Iterable, Mapping, Sequence
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.base import BaseEstimator
-
 import sklearn
+from sklearn.base import BaseEstimator
 
 try:
     import yaml
@@ -179,7 +178,8 @@ def log_training_run(
     _safe_write_text(run_dir / "git_sha.txt", git_sha + "\n")
     _safe_write_text(run_dir / "data_hash.txt", data_hash + "\n")
 
-    leaderboard.to_csv(run_dir / "leaderboard.csv", index=False)
+    leaderboard_path = run_dir / "leaderboard.csv"
+    leaderboard.to_csv(leaderboard_path, index=False)
 
     best_model_name, best_model, best_row = _select_best_model(leaderboard, trained_models)
     metrics_payload: Dict[str, Any] = {
