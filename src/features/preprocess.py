@@ -20,7 +20,8 @@ def infer_column_types(df: pd.DataFrame) -> Tuple[List[str], List[str]]:
 class RowwiseZScoreScaler(BaseEstimator, TransformerMixin):
     """Scales each sample (row) to mean 0 and std 1 across its features."""
     def fit(self, X, y=None):
-        return self  # No fitting necessary
+        self.is_fitted_ = True
+        return self
 
     def transform(self, X):
         X = pd.DataFrame(X)

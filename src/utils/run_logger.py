@@ -6,7 +6,6 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Sequence
-
 import joblib
 import numpy as np
 import pandas as pd
@@ -22,6 +21,16 @@ from .config import PipelineConfig
 
 
 def _to_serializable(value: Any) -> Any:
+    if hasattr(value, "rvs") and callable(getattr(value, "rvs", None)):
+        dist = getattr(value, "dist", None)
+        dist_name = getattr(dist, "name", dist.__class__.__name__ if dist is not None else type(value).__name__)
+        args = getattr(value, "args", ())
+        kwargs = getattr(value, "kwds", {})
+        return {
+            "distribution": dist_name,
+            "args": [_to_serializable(arg) for arg in args],
+            "kwargs": {str(k): _to_serializable(v) for k, v in kwargs.items()},
+        }
     if isinstance(value, Mapping):
         return {k: _to_serializable(v) for k, v in sorted(value.items())}
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
@@ -170,10 +179,11 @@ def log_training_run(
     run_id = _compute_run_id(config_hash, data_hash, git_sha)
     run_dir = _prepare_run_dir(output_dir, run_id)
 
+    config_payload = _to_serializable(config.to_dict())
     if yaml is not None:
-        config_yaml = yaml.safe_dump(config.to_dict(), sort_keys=False)
+        config_yaml = yaml.safe_dump(config_payload, sort_keys=False)
     else:  # pragma: no cover
-        config_yaml = json.dumps(_to_serializable(config.to_dict()), indent=2)
+        config_yaml = json.dumps(config_payload, indent=2)
     _safe_write_text(run_dir / "config.yaml", config_yaml)
     _safe_write_text(run_dir / "git_sha.txt", git_sha + "\n")
     _safe_write_text(run_dir / "data_hash.txt", data_hash + "\n")
