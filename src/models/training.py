@@ -68,12 +68,18 @@ def _default_rfe_values(n_features: int) -> List[int]:
     return unique
 
 
+def _is_distribution_candidate(value: Any) -> bool:
+    return hasattr(value, "rvs") and callable(getattr(value, "rvs"))
+
+
 def _sanitize_param_grid(
     grid: Dict[str, Any], n_features: int, include_rfe: bool
-) -> Dict[str, List[Any]]:
-    sanitized: Dict[str, List[Any]] = {}
+) -> Dict[str, Any]:
+    sanitized: Dict[str, Any] = {}
     for key, raw_values in grid.items():
-        if isinstance(raw_values, (list, tuple)):
+        if _is_distribution_candidate(raw_values):
+            values = raw_values
+        elif isinstance(raw_values, (list, tuple)):
             values = list(raw_values)
         else:
             values = [raw_values]
@@ -95,6 +101,8 @@ def _sanitize_param_grid(
             if not filtered_rfe:
                 filtered_rfe = _default_rfe_values(n_features)
             sanitized[key] = filtered_rfe
+        elif _is_distribution_candidate(values):
+            sanitized[key] = values
         else:
             sanitized[key] = values
 
@@ -103,9 +111,45 @@ def _sanitize_param_grid(
     return sanitized
 
 
+def _estimator_supports_feature_selection(
+    feature_selection: str,
+    estimator: BaseEstimator,
+    preprocessor,
+    X_sample: pd.DataFrame,
+    y_sample: pd.Series,
+) -> bool:
+    """Return True when the estimator can drive the requested feature selection."""
+    if feature_selection in {"none", "univariate"}:
+        return True
+    if feature_selection not in {"rfe", "rfecv"}:
+        return False
+
+    try:
+        steps = []
+        if preprocessor is not None:
+            steps.append(("preprocess", clone(preprocessor)))
+        steps.append(("estimator", clone(estimator)))
+        probe = Pipeline(steps=steps)
+    except Exception:
+        return False
+
+    try:
+        probe.fit(X_sample, y_sample)
+    except Exception:
+        return False
+
+    fitted = probe.named_steps.get("estimator")
+    if fitted is None:
+        return False
+
+    return any(
+        hasattr(fitted, attr) for attr in ("feature_importances_", "coef_")
+    )
+
+
 def _resolve_search_space(
     model_name: str, config: PipelineConfig, n_features: int
-) -> Dict[str, List[Any]]:
+) -> Dict[str, Any]:
     user_spaces = getattr(config, "search_spaces", {}) or {}
     include_rfe = getattr(config, "use_rfe", False)
     if model_name in user_spaces:
@@ -194,7 +238,7 @@ def _selected_feature_names(
     feature_selection: str, pipeline: Pipeline, input_columns: List[str]
 ) -> List[str] | None:
     if feature_selection not in {"univariate", "rfe", "rfecv"}:
-        return None
+        return "None"
 
     preprocessor = pipeline.named_steps.get("preprocess")
     feature_names = _feature_names_from_preprocessor(preprocessor, input_columns)
@@ -351,8 +395,24 @@ def nested_cross_validate_models(
     best_estimators: Dict[str, BaseEstimator] = {}
 
     feature_selection = getattr(config, "feature_selection", "none")
+    selection_support_cache: Dict[Tuple[str, str], bool] = {}
 
     for model_name, estimator in models.items():
+        model_feature_selection = feature_selection
+        cache_key = (model_name, model_feature_selection)
+        supports_selection = selection_support_cache.get(cache_key)
+        if supports_selection is None:
+            supports_selection = _estimator_supports_feature_selection(
+                model_feature_selection,
+                estimator,
+                preprocessor,
+                X_df,
+                y_series,
+            )
+            selection_support_cache[cache_key] = supports_selection
+        if not supports_selection:
+            model_feature_selection = "none"
+
         fold_scores: Dict[str, List[float]] = {metric: [] for metric in scoring}
         fold_history[model_name] = []
         for fold_idx, (train_idx, test_idx) in enumerate(outer_cv.split(X_df, y_series)):
@@ -360,7 +420,7 @@ def nested_cross_validate_models(
             y_train, y_test = y_series.iloc[train_idx], y_series.iloc[test_idx]
 
             pipeline = _build_pipeline(
-                feature_selection,
+                model_feature_selection,
                 preprocessor,
                 estimator,
                 scoring.get(primary_metric),
@@ -369,7 +429,7 @@ def nested_cross_validate_models(
 
             param_grid = _resolve_search_space(model_name, config, X_train.shape[1])
 
-            if feature_selection != "rfe" and "rfe__n_features_to_select" in param_grid:
+            if model_feature_selection != "rfe" and "rfe__n_features_to_select" in param_grid:
                 param_grid = {
                     k: v for k, v in param_grid.items() if k != "rfe__n_features_to_select"
                 }
@@ -455,19 +515,20 @@ def nested_cross_validate_models(
             if roc_curve_payload is not None:
                 fold_result["roc_curve"] = roc_curve_payload
 
-            feature_count = _selected_feature_count(feature_selection, best_pipeline)
+            feature_count = _selected_feature_count(model_feature_selection, best_pipeline)
             if feature_count is None:
                 feature_count = X_train.shape[1]
             fold_result["selected_feature_count"] = feature_count
 
-            selected_features = None
-            if feature_selection in {"univariate", "rfe", "rfecv"}:
+            selected_features = "All"
+            if model_feature_selection in {"univariate", "rfe", "rfecv"}:
                 selected_features = _selected_feature_names(
-                    feature_selection,
+                    model_feature_selection,
                     best_pipeline,
                     list(X_train.columns),
                 )
             fold_result["selected_features"] = selected_features
+            fold_result["feature_selection"] = model_feature_selection
 
             for metric_name, scorer in scorers.items():
                 score_value = float(scorer(best_pipeline, X_test, y_test))
@@ -478,14 +539,14 @@ def nested_cross_validate_models(
 
         # Final fit on all data
         final_pipeline = _build_pipeline(
-            feature_selection,
+            model_feature_selection,
             preprocessor,
             estimator,
             scoring.get(primary_metric),
             inner_cv.get_n_splits(),
         )
         final_param_grid = _resolve_search_space(model_name, config, X_df.shape[1])
-        if feature_selection != "rfe" and "rfe__n_features_to_select" in final_param_grid:
+        if model_feature_selection != "rfe" and "rfe__n_features_to_select" in final_param_grid:
             final_param_grid = {
                 k: v
                 for k, v in final_param_grid.items()
@@ -506,14 +567,14 @@ def nested_cross_validate_models(
             setattr(best_pipeline, "label_encoder_", label_encoder)
         best_estimators[model_name] = best_pipeline
 
-        final_feature_count = _selected_feature_count(feature_selection, best_pipeline)
+        final_feature_count = _selected_feature_count(model_feature_selection, best_pipeline)
         if final_feature_count is None:
             final_feature_count = X_df.shape[1]
 
-        final_selected_features = None
-        if feature_selection in {"univariate", "rfe", "rfecv"}:
+        final_selected_features = "All"
+        if model_feature_selection in {"univariate", "rfe", "rfecv"}:
             final_selected_features = _selected_feature_names(
-                feature_selection,
+                model_feature_selection,
                 best_pipeline,
                 list(X_df.columns),
             )
@@ -524,6 +585,7 @@ def nested_cross_validate_models(
             "best_params_full_fit": final_search.best_params_,
             "selected_feature_count": final_feature_count,
             "selected_features": final_selected_features,
+            "feature_selection": model_feature_selection,
         }
         for metric_name, values in fold_scores.items():
             summary[f"mean_{metric_name}"] = float(np.mean(values))
