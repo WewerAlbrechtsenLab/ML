@@ -57,11 +57,38 @@ def _coerce_fold_details(value: Any) -> List[Mapping[str, Any]]:
     return []
 
 
-def _collect_curves(fold_details: Any) -> List[Dict[str, np.ndarray]]:
-    curves: List[Dict[str, np.ndarray]] = []
+def _collect_curves(fold_details: Any) -> Dict[Any, List[Dict[str, np.ndarray]]]:
+    grouped: Dict[Any, List[Dict[str, np.ndarray]]] = {}
     for fold in _coerce_fold_details(fold_details):
         curve = fold.get("roc_curve")
         if not isinstance(curve, Mapping):
+            continue
+        per_class = curve.get("per_class")
+        if isinstance(per_class, Sequence) and per_class:
+            for class_entry in per_class:
+                if not isinstance(class_entry, Mapping):
+                    continue
+                fpr = class_entry.get("fpr")
+                tpr = class_entry.get("tpr")
+                thresholds = class_entry.get("thresholds")
+                if not isinstance(fpr, Sequence) or not isinstance(tpr, Sequence):
+                    continue
+                try:
+                    fpr_arr = np.asarray(fpr, dtype=float)
+                    tpr_arr = np.asarray(tpr, dtype=float)
+                    thr_arr = (
+                        np.asarray(thresholds, dtype=float)
+                        if thresholds is not None
+                        else None
+                    )
+                except Exception:
+                    continue
+                if fpr_arr.size == 0 or tpr_arr.size == 0:
+                    continue
+                label = class_entry.get("class_label")
+                grouped.setdefault(label, []).append(
+                    {"fpr": fpr_arr, "tpr": tpr_arr, "thresholds": thr_arr}
+                )
             continue
         fpr = curve.get("fpr")
         tpr = curve.get("tpr")
@@ -76,8 +103,11 @@ def _collect_curves(fold_details: Any) -> List[Dict[str, np.ndarray]]:
             continue
         if fpr_arr.size == 0 or tpr_arr.size == 0:
             continue
-        curves.append({"fpr": fpr_arr, "tpr": tpr_arr, "thresholds": thr_arr})
-    return curves
+        label = curve.get("label")
+        grouped.setdefault(label, []).append(
+            {"fpr": fpr_arr, "tpr": tpr_arr, "thresholds": thr_arr}
+        )
+    return grouped
 
 
 def _collect_confusion_matrices(fold_details: Any) -> List[tuple[np.ndarray, List[Any]]]:
@@ -210,16 +240,16 @@ def plot_cv_roc_curves(
         raise ValueError("fpr_grid must be a 1D array of false-positive rates.")
 
     allowed_models = set(models) if models is not None else None
-    model_curves: List[tuple[str, List[Dict[str, np.ndarray]], Dict[str, Any]]] = []
+    model_curves: List[tuple[str, Dict[Any, List[Dict[str, np.ndarray]]], Dict[str, Any]]] = []
     for record in records:
         model_name = record.get("model")
         if not model_name:
             continue
         if allowed_models is not None and model_name not in allowed_models:
             continue
-        curves = _collect_curves(record.get("fold_details"))
-        if curves:
-            model_curves.append((model_name, curves, record))
+        curves_by_label = _collect_curves(record.get("fold_details"))
+        if curves_by_label:
+            model_curves.append((model_name, curves_by_label, record))
 
     if not model_curves:
         raise ValueError(
@@ -229,30 +259,39 @@ def plot_cv_roc_curves(
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1, label="Chance")
 
-    colors = plt.cm.tab10(np.linspace(0, 1, len(model_curves)))
+    total_series = sum(len(curves_by_label) for _, curves_by_label, _ in model_curves)
+    color_map = plt.cm.get_cmap("tab20" if total_series > 10 else "tab10")
+    colors = color_map(np.linspace(0, 1, max(total_series, 1)))
 
-    for idx, (model_name, curves, record) in enumerate(model_curves):
-        mean_tpr, std_tpr = _aggregate_curves(curves, grid)
-        if mean_tpr is None:
-            continue
+    color_idx = 0
+    for model_name, curves_by_label, record in model_curves:
+        for label_key, curve_list in curves_by_label.items():
+            mean_tpr, std_tpr = _aggregate_curves(curve_list, grid)
+            if mean_tpr is None:
+                continue
 
-        mean_auc = float(auc(grid, mean_tpr))
-        label = f"{model_name} (mean AUC={mean_auc:.3f})"
+            mean_auc = float(auc(grid, mean_tpr))
+            if label_key is None or label_key == "":
+                legend_label = f"{model_name} (mean AUC={mean_auc:.3f})"
+            else:
+                legend_label = f"{model_name} [{label_key}] (mean AUC={mean_auc:.3f})"
 
-        color = colors[idx]
-        display_obj = RocCurveDisplay(fpr=grid, tpr=mean_tpr, roc_auc=mean_auc)
-        display_obj.plot(
-            ax=ax,
-            name=label,
-            color=color,
-            linewidth=2,
-            plot_chance_level=False,
-        )
+            color = colors[min(color_idx, colors.shape[0] - 1)]
+            color_idx += 1
 
-        if std_tpr is not None:
-            lower = np.clip(mean_tpr - std_tpr, 0.0, 1.0)
-            upper = np.clip(mean_tpr + std_tpr, 0.0, 1.0)
-            ax.fill_between(grid, lower, upper, color=color, alpha=0.2)
+            display_obj = RocCurveDisplay(fpr=grid, tpr=mean_tpr, roc_auc=mean_auc)
+            display_obj.plot(
+                ax=ax,
+                name=legend_label,
+                color=color,
+                linewidth=2,
+                plot_chance_level=False,
+            )
+
+            if std_tpr is not None:
+                lower = np.clip(mean_tpr - std_tpr, 0.0, 1.0)
+                upper = np.clip(mean_tpr + std_tpr, 0.0, 1.0)
+                ax.fill_between(grid, lower, upper, color=color, alpha=0.2)
 
     ax.set_xlabel("False Positive Rate")
     ax.set_ylabel("True Positive Rate")

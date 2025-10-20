@@ -372,19 +372,25 @@ def nested_cross_validate_models(
         y_series = y_series.loc[valid_mask].reset_index(drop=True)
 
     label_encoder: LabelEncoder | None = None
+    unique_labels = pd.Index(y_series.unique())
     if config.task_type == "binary":
-        unique_labels = pd.Index(y_series.unique())
         if len(unique_labels) != 2:
             raise ValueError(
                 "Binary classification requires exactly two classes in the target. "
                 f"Observed {len(unique_labels)} unique labels."
             )
+
+    needs_encoding = False
+    if config.task_type == "binary":
         needs_encoding = not set(unique_labels).issubset({0, 1})
-        if needs_encoding:
-            label_encoder = LabelEncoder()
-            y_series = pd.Series(
-                label_encoder.fit_transform(y_series), index=y_series.index
-            )
+    elif config.task_type == "multiclass":
+        needs_encoding = True
+
+    if needs_encoding:
+        label_encoder = LabelEncoder()
+        y_series = pd.Series(
+            label_encoder.fit_transform(y_series), index=y_series.index
+        )
 
     outer_cv = build_outer_cv(config)
     inner_cv = build_inner_cv(config)
@@ -480,7 +486,10 @@ def nested_cross_validate_models(
                 fold_result["confusion_matrix_labels"] = cm_labels
 
             roc_curve_payload = None
-            if config.task_type == "binary" and hasattr(best_pipeline, "predict_proba"):
+            has_predict_proba = hasattr(best_pipeline, "predict_proba")
+            has_decision_function = hasattr(best_pipeline, "decision_function")
+
+            if config.task_type == "binary" and has_predict_proba:
                 proba = None
                 try:
                     proba = best_pipeline.predict_proba(X_test)
@@ -490,13 +499,12 @@ def nested_cross_validate_models(
                     proba = np.asarray(proba)
                     if proba.ndim == 2 and proba.shape[1] > 1:
                         if classes is None and hasattr(best_pipeline, "named_steps"):
-                            estimator = best_pipeline.named_steps.get("estimator")
-                            classes = getattr(estimator, "classes_", None)
+                            estimator_step = best_pipeline.named_steps.get("estimator")
+                            classes = getattr(estimator_step, "classes_", None)
                         class_list = list(classes) if classes is not None else None
                         pos_index = -1
-                        if class_list is not None:
-                            if 1 in class_list:
-                                pos_index = class_list.index(1)
+                        if class_list is not None and 1 in class_list:
+                            pos_index = class_list.index(1)
                         if pos_index < 0:
                             pos_index = proba.shape[1] - 1
                         pos_scores = proba[:, pos_index]
@@ -512,6 +520,57 @@ def nested_cross_validate_models(
                             "tpr": tpr.tolist(),
                             "thresholds": thresholds.tolist(),
                         }
+            elif (
+                config.task_type == "multiclass"
+                and (has_predict_proba or has_decision_function)
+            ):
+                class_scores = None
+                try:
+                    if has_predict_proba:
+                        class_scores = best_pipeline.predict_proba(X_test)
+                    else:
+                        class_scores = best_pipeline.decision_function(X_test)
+                except Exception:
+                    class_scores = None
+
+                if class_scores is not None:
+                    scores = np.asarray(class_scores)
+                    if scores.ndim == 1:
+                        scores = scores.reshape(-1, 1)
+                    if classes is None and hasattr(best_pipeline, "named_steps"):
+                        estimator_step = best_pipeline.named_steps.get("estimator")
+                        classes = getattr(estimator_step, "classes_", None)
+                    if classes is None:
+                        classes = np.arange(scores.shape[1])
+                    class_list = list(classes)
+                    per_class_curves: List[Dict[str, Any]] = []
+                    y_test_values = y_test.to_numpy()
+                    for idx, encoded_label in enumerate(class_list):
+                        if scores.shape[1] <= idx:
+                            continue
+                        binary_targets = (y_test_values == encoded_label).astype(int)
+                        # Need at least one positive and one negative sample to compute ROC.
+                        if binary_targets.sum() == 0 or binary_targets.sum() == binary_targets.size:
+                            continue
+                        try:
+                            fpr, tpr, thresholds = roc_curve(binary_targets, scores[:, idx])
+                        except ValueError:
+                            continue
+                        display_label = encoded_label
+                        if label_encoder is not None:
+                            display_label = label_encoder.inverse_transform([encoded_label])[0]
+                        if isinstance(display_label, np.generic):
+                            display_label = display_label.item()
+                        per_class_curves.append(
+                            {
+                                "class_label": display_label,
+                                "fpr": fpr.tolist(),
+                                "tpr": tpr.tolist(),
+                                "thresholds": thresholds.tolist(),
+                            }
+                        )
+                    if per_class_curves:
+                        roc_curve_payload = {"per_class": per_class_curves}
             if roc_curve_payload is not None:
                 fold_result["roc_curve"] = roc_curve_payload
 
@@ -536,7 +595,7 @@ def nested_cross_validate_models(
                 fold_result[f"test_{metric_name}"] = score_value
 
             fold_history[model_name].append(fold_result)
-
+        print(f"Completed nested CV for model '{model_name}'.")
         # Final fit on all data
         final_pipeline = _build_pipeline(
             model_feature_selection,
@@ -592,7 +651,7 @@ def nested_cross_validate_models(
             summary[f"std_{metric_name}"] = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
 
         records.append(summary)
-
+    print("Nested cross-validation completed for all models.")
     leaderboard = pd.DataFrame(records).sort_values(
         by=f"mean_{primary_metric}", ascending=False
     ).reset_index(drop=True)
@@ -604,6 +663,7 @@ def nested_cross_validate_models(
             trained_models=best_estimators,
         )
         leaderboard.attrs["run_dir"] = str(run_dir)
+        print(f"Training run logged to: {run_dir}")
     except Exception as exc:
         raise RuntimeError(f"Failed to log training run: {exc}") from exc
     return leaderboard, best_estimators

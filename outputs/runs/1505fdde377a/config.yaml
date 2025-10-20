@@ -1,0 +1,105 @@
+data_path: ../data/wine_data.tsv
+feature_cols: null
+feature_selection: rfe
+holdout_fraction: null
+holdout_groups: null
+inner_splits: 2
+model_registry:
+  extra_trees:
+    classname: sklearn.ensemble.ExtraTreesClassifier
+    params:
+      n_jobs: -1
+      random_state: 42
+  gaussian_nb:
+    classname: sklearn.naive_bayes.GaussianNB
+    params: {}
+  knn:
+    classname: sklearn.neighbors.KNeighborsClassifier
+    params:
+      n_jobs: -1
+  lda:
+    classname: sklearn.discriminant_analysis.LinearDiscriminantAnalysis
+    params: {}
+  logistic_regression:
+    classname: sklearn.linear_model.LogisticRegression
+    params:
+      max_iter: 5000
+      multi_class: multinomial
+      random_state: 42
+  svm_linear:
+    classname: sklearn.svm.SVC
+    params:
+      kernel: linear
+      probability: true
+      random_state: 42
+outer_splits: 2
+output_dir: ../outputs
+random_state: 42
+search_spaces:
+  extra_trees:
+    estimator__max_depth:
+    - null
+    - 10
+    - 20
+    estimator__max_features:
+    - sqrt
+    - log2
+    estimator__min_samples_leaf:
+      distribution: randint
+      args:
+      - 1
+      - 11
+      kwargs: {}
+    estimator__n_estimators:
+      distribution: randint
+      args:
+      - 100
+      - 301
+      kwargs: {}
+  knn:
+    estimator__metric:
+    - euclidean
+    - manhattan
+    - minkowski
+    estimator__n_neighbors:
+      distribution: randint
+      args:
+      - 1
+      - 11
+      kwargs: {}
+    estimator__weights:
+    - distance
+  lda:
+    estimator__shrinkage:
+    - null
+    estimator__solver:
+    - svd
+    - lsqr
+    - eigen
+  logistic_regression:
+    estimator__C:
+    - 0.1
+    - 0.5
+    - 1.0
+    estimator__penalty:
+    - l2
+    estimator__solver:
+    - lbfgs
+    - saga
+  svm_linear:
+    estimator__C:
+    - 0.01
+    - 0.1
+    - 1.0
+    - 10.0
+    - 100.0
+    estimator__class_weight:
+    - null
+    - balanced
+    estimator__tol:
+    - 0.0001
+    - 0.001
+    - 0.01
+target_cols:
+- target
+task_type: multiclass
