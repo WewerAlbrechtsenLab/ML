@@ -10,10 +10,10 @@ from sklearn.metrics import confusion_matrix, get_scorer, roc_curve
 from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder
-
 from src.models.metrics import scoring_map
 from src.utils.config import PipelineConfig
 from src.utils.run_logger import log_training_run
+from src.features.preprocess2 import build_fold_preprocessor
 from functools import partial
 
 def build_outer_cv(config: PipelineConfig) -> StratifiedKFold:
@@ -40,18 +40,16 @@ def build_inner_cv(config: PipelineConfig) -> StratifiedKFold:
 
 
 def _ensure_frame(X) -> pd.DataFrame:
-    if isinstance(X, pd.DataFrame):
-        return X.reset_index(drop=True)
-    return pd.DataFrame(X)
+    return X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
 
 
 def _ensure_series(y) -> pd.Series:
     if isinstance(y, pd.DataFrame):
         if y.shape[1] != 1:
             raise ValueError("Nested CV currently supports a single target column.")
-        return y.iloc[:, 0].reset_index(drop=True)
+        return y.iloc[:, 0]
     if isinstance(y, pd.Series):
-        return y.reset_index(drop=True)
+        return y
     return pd.Series(y)
 def _default_rfe_values(n_features: int) -> List[int]:
     if n_features <= 1:
@@ -114,7 +112,6 @@ def _sanitize_param_grid(
 def _estimator_supports_feature_selection(
     feature_selection: str,
     estimator: BaseEstimator,
-    preprocessor,
     X_sample: pd.DataFrame,
     y_sample: pd.Series,
 ) -> bool:
@@ -126,8 +123,6 @@ def _estimator_supports_feature_selection(
 
     try:
         steps = []
-        if preprocessor is not None:
-            steps.append(("preprocess", clone(preprocessor)))
         steps.append(("estimator", clone(estimator)))
         probe = Pipeline(steps=steps)
     except Exception:
@@ -311,8 +306,8 @@ class FixedFeatureSelector(BaseEstimator, TransformerMixin):
         return [name for name, keep in zip(input_features, self.support_mask) if keep]
 
 
-def _build_pipeline(feature_selection: str, preprocessor, estimator, scoring: str | None = None, cv_splits: int = 5):
-    steps = [("preprocess", clone(preprocessor))]
+def _build_pipeline(feature_selection: str, fold_preprocessor, estimator, scoring: str | None = None, cv_splits: int = 5):
+    steps = [("preprocess", clone(fold_preprocessor))]
     if feature_selection == "univariate":
         steps.append(("select", SelectKBest(score_func=partial(mutual_info_classif, random_state=PipelineConfig.random_state))))
     elif feature_selection == "rfe":
@@ -353,7 +348,6 @@ def _finalize_rfecv_pipeline(pipeline: Pipeline, X: pd.DataFrame, y, config: Pip
 
 def nested_cross_validate_models(
     models: Dict[str, BaseEstimator],
-    preprocessor,
     X,
     y,
     config: PipelineConfig,
@@ -366,34 +360,23 @@ def nested_cross_validate_models(
     X_df = _ensure_frame(X)
     y_series = _ensure_series(y)
 
-    if y_series.isna().any():
-        valid_mask = ~y_series.isna()
-        X_df = X_df.loc[valid_mask].reset_index(drop=True)
-        y_series = y_series.loc[valid_mask].reset_index(drop=True)
-
-    label_encoder: LabelEncoder | None = None
-    unique_labels = pd.Index(y_series.unique())
+    raw_labels = pd.Index(y_series.unique())
     if config.task_type == "binary":
-        if len(unique_labels) != 2:
+        if len(raw_labels) != 2:
             raise ValueError(
-                "Binary classification requires exactly two classes in the target. "
-                f"Observed {len(unique_labels)} unique labels."
+                f"Binary classification requires 2 classes, got {len(raw_labels)}: {raw_labels}"
             )
 
-    needs_encoding = False
-    if config.task_type == "binary":
-        needs_encoding = not set(unique_labels).issubset({0, 1})
-    elif config.task_type == "multiclass":
-        needs_encoding = True
+    label_encoder = LabelEncoder()
+    y_series = pd.Series(
+        label_encoder.fit_transform(y_series),
+        index=y_series.index
+    )
 
-    if needs_encoding:
-        label_encoder = LabelEncoder()
-        y_series = pd.Series(
-            label_encoder.fit_transform(y_series), index=y_series.index
-        )
-
+    # ---- Build CV objects  ----
     outer_cv = build_outer_cv(config)
     inner_cv = build_inner_cv(config)
+
     scorers = {name: get_scorer(code) for name, code in scoring.items()}
 
     records: List[Dict[str, Any]] = []
@@ -411,7 +394,6 @@ def nested_cross_validate_models(
             supports_selection = _estimator_supports_feature_selection(
                 model_feature_selection,
                 estimator,
-                preprocessor,
                 X_df,
                 y_series,
             )
@@ -421,25 +403,36 @@ def nested_cross_validate_models(
 
         fold_scores: Dict[str, List[float]] = {metric: [] for metric in scoring}
         fold_history[model_name] = []
+
+        # ===================== OUTER CV LOOP ===================== #
         for fold_idx, (train_idx, test_idx) in enumerate(outer_cv.split(X_df, y_series)):
             X_train, X_test = X_df.iloc[train_idx], X_df.iloc[test_idx]
             y_train, y_test = y_series.iloc[train_idx], y_series.iloc[test_idx]
 
+            # Extract fold-specific batch labels for ComBat (from MultiIndex level "batch")
+            train_batches = X_train.index.get_level_values("batch")
+            test_batches = X_test.index.get_level_values("batch")
+
+            # Build NEW fold-specific preprocessor
+            fold_preprocessor = build_fold_preprocessor(batch_labels=train_batches)
+
+            # Build full ML pipeline for inner CV (preprocess + feature selection + estimator)
             pipeline = _build_pipeline(
                 model_feature_selection,
-                preprocessor,
+                fold_preprocessor,
                 estimator,
                 scoring.get(primary_metric),
                 inner_cv.get_n_splits(),
             )
 
+            # Resolve model-specific search space
             param_grid = _resolve_search_space(model_name, config, X_train.shape[1])
-
             if model_feature_selection != "rfe" and "rfe__n_features_to_select" in param_grid:
                 param_grid = {
                     k: v for k, v in param_grid.items() if k != "rfe__n_features_to_select"
                 }
 
+            # Inner CV hyperparameter search
             search = RandomizedSearchCV(
                 pipeline,
                 param_distributions=param_grid,
@@ -448,25 +441,42 @@ def nested_cross_validate_models(
                 cv=inner_cv,
                 n_jobs=-1,
             )
-            search.fit(X_train, y_train)
+
+            # Pass batch_labels only to the estimator pipeline; metadata routing will
+            # send it to CombatCorrector.fit / transform, not to scorers.
+            search.fit(
+                X_train,
+                y_train,
+                batch_labels=train_batches,
+            )
 
             best_pipeline = search.best_estimator_
-            best_pipeline = _finalize_rfecv_pipeline(best_pipeline, X_train, y_train, config, scoring.get(primary_metric))
+            
+
+            best_pipeline = _finalize_rfecv_pipeline(
+                best_pipeline, X_train, y_train, config, scoring.get(primary_metric)
+            )
+
             fold_result: Dict[str, Any] = {
                 "outer_fold": fold_idx,
                 "best_params": search.best_params_,
             }
 
+            # ===================== PREDICTIONS ON OUTER TEST ===================== #
             classes = getattr(best_pipeline, "classes_", None)
             if classes is None and hasattr(best_pipeline, "named_steps"):
                 estimator_step = best_pipeline.named_steps.get("estimator")
                 classes = getattr(estimator_step, "classes_", None)
 
             try:
-                y_pred = best_pipeline.predict(X_test)
+                y_pred = best_pipeline.predict(
+                    X_test,
+                    batch_labels=test_batches,
+                )
             except Exception:
                 y_pred = None
             else:
+                # Confusion matrix
                 if label_encoder is not None:
                     label_range = np.arange(len(label_encoder.classes_))
                     cm = confusion_matrix(y_test, y_pred, labels=label_range)
@@ -485,6 +495,7 @@ def nested_cross_validate_models(
                 fold_result["confusion_matrix"] = cm.tolist()
                 fold_result["confusion_matrix_labels"] = cm_labels
 
+            # ===================== ROC CURVES (OPTIONAL) ===================== #
             roc_curve_payload = None
             has_predict_proba = hasattr(best_pipeline, "predict_proba")
             has_decision_function = hasattr(best_pipeline, "decision_function")
@@ -492,9 +503,13 @@ def nested_cross_validate_models(
             if config.task_type == "binary" and has_predict_proba:
                 proba = None
                 try:
-                    proba = best_pipeline.predict_proba(X_test)
+                    proba = best_pipeline.predict_proba(
+                        X_test,
+                        batch_labels=test_batches,
+                    )
                 except Exception:
                     proba = None
+
                 if proba is not None:
                     proba = np.asarray(proba)
                     if proba.ndim == 2 and proba.shape[1] > 1:
@@ -520,6 +535,7 @@ def nested_cross_validate_models(
                             "tpr": tpr.tolist(),
                             "thresholds": thresholds.tolist(),
                         }
+
             elif (
                 config.task_type == "multiclass"
                 and (has_predict_proba or has_decision_function)
@@ -527,9 +543,15 @@ def nested_cross_validate_models(
                 class_scores = None
                 try:
                     if has_predict_proba:
-                        class_scores = best_pipeline.predict_proba(X_test)
+                        class_scores = best_pipeline.predict_proba(
+                            X_test,
+                            batch_labels=test_batches,
+                        )
                     else:
-                        class_scores = best_pipeline.decision_function(X_test)
+                        class_scores = best_pipeline.decision_function(
+                            X_test,
+                            batch_labels=test_batches,
+                        )
                 except Exception:
                     class_scores = None
 
@@ -574,6 +596,7 @@ def nested_cross_validate_models(
             if roc_curve_payload is not None:
                 fold_result["roc_curve"] = roc_curve_payload
 
+            # ===================== FEATURE SELECTION META ===================== #
             feature_count = _selected_feature_count(model_feature_selection, best_pipeline)
             if feature_count is None:
                 feature_count = X_train.shape[1]
@@ -589,21 +612,68 @@ def nested_cross_validate_models(
             fold_result["selected_features"] = selected_features
             fold_result["feature_selection"] = model_feature_selection
 
-            for metric_name, scorer in scorers.items():
-                score_value = float(scorer(best_pipeline, X_test, y_test))
-                fold_scores[metric_name].append(score_value)
-                fold_result[f"test_{metric_name}"] = score_value
+            # ===================== METRICS USING SCORER OBJECTS ===================== #
+            if y_pred is not None:
+                for metric_name, scorer in scorers.items():
+                    # Figure out what the scorer expects: predict, predict_proba, or decision_function
+                    response_method = getattr(scorer, "_response_method", "predict")
+
+                    if response_method == "predict":
+                        y_score = y_pred
+
+                    elif response_method == "predict_proba" and has_predict_proba:
+                        # For probability-based metrics (e.g. roc_auc), mimic sklearn's internal behaviour
+                        proba = best_pipeline.predict_proba(
+                            X_test,
+                            batch_labels=test_batches,
+                        )
+                        proba = np.asarray(proba)
+                        # Binary: pass proba for the positive class
+                        if config.task_type == "binary" and proba.ndim == 2 and proba.shape[1] > 1:
+                            class_list = list(classes) if classes is not None else None
+                            pos_index = -1
+                            if class_list is not None and 1 in class_list:
+                                pos_index = class_list.index(1)
+                            if pos_index < 0:
+                                pos_index = proba.shape[1] - 1
+                            y_score = proba[:, pos_index]
+                        else:
+                            y_score = proba
+
+                    elif response_method == "decision_function" and has_decision_function:
+                        y_score = best_pipeline.decision_function(
+                            X_test,
+                            batch_labels=test_batches,
+                        )
+                    else:
+                        # Fallback: just use predictions
+                        y_score = y_pred
+
+                    score_value = scorer._sign * scorer._score_func(
+                        y_test,
+                        y_score,
+                        **scorer._kwargs,
+                    )
+                    score_value = float(score_value)
+                    fold_scores[metric_name].append(score_value)
+                    fold_result[f"test_{metric_name}"] = score_value
 
             fold_history[model_name].append(fold_result)
+
         print(f"Completed nested CV for model '{model_name}'.")
-        # Final fit on all data
+
+        # ===================== FINAL FIT ON ALL DATA ===================== #
+        all_batches = X_df.index.get_level_values("batch")
+        global_preprocessor = build_fold_preprocessor(batch_labels=all_batches)
+
         final_pipeline = _build_pipeline(
             model_feature_selection,
-            preprocessor,
+            global_preprocessor,
             estimator,
             scoring.get(primary_metric),
             inner_cv.get_n_splits(),
         )
+
         final_param_grid = _resolve_search_space(model_name, config, X_df.shape[1])
         if model_feature_selection != "rfe" and "rfe__n_features_to_select" in final_param_grid:
             final_param_grid = {
@@ -620,8 +690,15 @@ def nested_cross_validate_models(
             cv=inner_cv,
             n_jobs=-1,
         )
-        final_search.fit(X_df, y_series)
-        best_pipeline = _finalize_rfecv_pipeline(final_search.best_estimator_, X_df, y_series, config, scoring.get(primary_metric))
+        final_search.fit(
+            X_df,
+            y_series,
+            batch_labels=all_batches,
+        )
+
+        best_pipeline = _finalize_rfecv_pipeline(
+            final_search.best_estimator_, X_df, y_series, config, scoring.get(primary_metric)
+        )
         if label_encoder is not None:
             setattr(best_pipeline, "label_encoder_", label_encoder)
         best_estimators[model_name] = best_pipeline
@@ -651,6 +728,7 @@ def nested_cross_validate_models(
             summary[f"std_{metric_name}"] = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
 
         records.append(summary)
+
     print("Nested cross-validation completed for all models.")
     leaderboard = pd.DataFrame(records).sort_values(
         by=f"mean_{primary_metric}", ascending=False
