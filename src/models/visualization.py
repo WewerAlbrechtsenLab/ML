@@ -395,8 +395,22 @@ def plot_cv_confusion_matrices(
 
     for ax, (model_name, matrix, labels) in zip(axes_array, matrices):
         display_matrix = _normalize_confusion_matrix(matrix, norm_mode)
-        disp = ConfusionMatrixDisplay(confusion_matrix=display_matrix, display_labels=labels)
-        disp.plot(ax=ax, colorbar=False)
+    if norm_mode is None:
+        display_matrix_int = display_matrix.round().astype(int)
+        disp = ConfusionMatrixDisplay(
+            confusion_matrix=display_matrix_int,
+            display_labels=labels
+        )
+        disp.plot(ax=ax, colorbar=False, values_format="d")
+
+    else:
+        # Normalized → plot as float
+        disp = ConfusionMatrixDisplay(
+            confusion_matrix=display_matrix,
+            display_labels=labels
+        )
+        disp.plot(ax=ax, colorbar=False, values_format=".2f")
+
         if vmax is not None:
             ax.images[-1].set_clim(0, vmax)
         mode_suffix = f" (normalized: {norm_mode})" if norm_mode else ""
@@ -480,3 +494,68 @@ def plot_cv_confusion_matrices_from_metrics(
         models=models,
         normalize=normalize,
     )
+
+
+
+########################### ---------------------------###############################
+
+def plot_confusion_from_leaderboard(leaderboard, model, normalize=None):
+    folds = leaderboard.loc[leaderboard.model == model, "fold_details"].iloc[0]
+
+    # collect & sum matrices
+    matrices = []
+    for fold in folds:
+        cm = np.asarray(fold["confusion_matrix"], dtype=float)
+        matrices.append(cm)
+
+    agg = np.sum(matrices, axis=0)
+
+    # normalize if needed
+    if normalize == "true":
+        agg = agg / agg.sum(axis=1, keepdims=True)
+    elif normalize == "pred":
+        agg = agg / agg.sum(axis=0, keepdims=True)
+    elif normalize == "all":
+        agg = agg / agg.sum()
+
+    # format correctly
+    fmt = ".2f" if normalize else "d"
+    if not normalize:
+        agg = agg.round().astype(int)
+
+    disp = ConfusionMatrixDisplay(confusion_matrix=agg)
+    disp.plot(values_format=fmt, cmap="Blues")
+    plt.title(f"Confusion Matrix (outer CV) — {model}")
+    plt.show()
+
+
+def plot_roc_from_leaderboard(leaderboard, model):
+    folds = leaderboard.loc[leaderboard.model == model, "fold_details"].iloc[0]
+
+    # collect fpr/tpr pairs
+    fprs = []
+    tprs = []
+    for fold in folds:
+        roc = fold.get("roc_curve")
+        if roc is None:
+            continue
+        fprs.append(np.asarray(roc["fpr"]))
+        tprs.append(np.asarray(roc["tpr"]))
+
+    # interpolation grid
+    grid = np.linspace(0, 1, 200)
+    tprs_interp = [np.interp(grid, f, t) for f, t in zip(fprs, tprs)]
+    mean_tpr = np.mean(tprs_interp, axis=0)
+    std_tpr = np.std(tprs_interp, axis=0)
+    auc_value = auc(grid, mean_tpr)
+
+    # plot
+    plt.plot(grid, mean_tpr, label=f"{model} (AUC={auc_value:.3f})")
+    plt.fill_between(grid, mean_tpr - std_tpr, mean_tpr + std_tpr, alpha=0.2)
+    plt.plot([0, 1], [0, 1], "--", color="grey")
+    plt.xlabel("FPR")
+    plt.ylabel("TPR")
+    plt.title(f"Mean ROC Curve — {model}")
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.show()
