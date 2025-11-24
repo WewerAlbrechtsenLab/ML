@@ -8,20 +8,8 @@ import pimmslearn.sampling
 from pimmslearn.sklearn.ae_transformer import AETransformer
 from pimmslearn.sklearn.cf_transformer import CollaborativeFilteringTransformer
 from inmoose.pycombat import pycombat_norm
-from pathlib import Path
+from src.utils.__init__ import set_global_seed
 
-# class FeatureLocker:
-#     """Locks feature names per CV fold"""
-#     def _lock_features(self, X):
-#         # Called during fit()
-#         X_df = pd.DataFrame(X)
-#         self.feature_names_ = list(X_df.columns)
-
-#     def _enforce_features(self, X):
-#         # Called during transform() – ensures consistent shape
-#         X_df = pd.DataFrame(X)
-#         return X_df.reindex(columns=self.feature_names_).values
-    
 class CFImputer(BaseEstimator, TransformerMixin):
     """
     Clean sklearn wrapper around pimmslearn CollaborativeFilteringTransformer.
@@ -124,11 +112,13 @@ class VAEImputer(BaseEstimator, TransformerMixin):
         self.random_state = random_state
 
     def fit(self, X, y=None, **kwargs):
+        # ---- Apply strong seeding BEFORE creating the VAE model ----
+        set_global_seed(self.random_state)
+
         X_df = pd.DataFrame(X).copy()
         self.feature_names_ = list(X_df.columns)
 
-        #self._lock_features(X_df)  # lock columns from TRAIN fold only
-
+        # Create AE model AFTER seeding
         self.vae = AETransformer(
             hidden_layers=self.hidden_layers,
             latent_dim=self.latent_dim,
@@ -137,7 +127,7 @@ class VAEImputer(BaseEstimator, TransformerMixin):
             batch_size=64,
         )
 
-        # train VAE on TRAIN-FOLD only
+        # Fit VAE 
         self.vae.fit(
             X_df,
             y=None,
@@ -158,9 +148,6 @@ class VAEImputer(BaseEstimator, TransformerMixin):
 
         # run VAE imputation
         out = self.vae.transform(X_df)
-
-        # enforce feature order again
-        out = pd.DataFrame(out, columns=self.feature_names_)
 
         return out.values
     
