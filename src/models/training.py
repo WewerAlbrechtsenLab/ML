@@ -10,10 +10,10 @@ from sklearn.metrics import confusion_matrix, get_scorer, roc_curve
 from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder
-
 from src.models.metrics import scoring_map
 from src.utils.config import PipelineConfig
 from src.utils.run_logger import log_training_run
+from src.features.preprocess import build_fold_preprocessor
 from functools import partial
 
 def build_outer_cv(config: PipelineConfig) -> StratifiedKFold:
@@ -40,136 +40,74 @@ def build_inner_cv(config: PipelineConfig) -> StratifiedKFold:
 
 
 def _ensure_frame(X) -> pd.DataFrame:
-    if isinstance(X, pd.DataFrame):
-        return X.reset_index(drop=True)
-    return pd.DataFrame(X)
+    return X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
 
 
 def _ensure_series(y) -> pd.Series:
     if isinstance(y, pd.DataFrame):
         if y.shape[1] != 1:
             raise ValueError("Nested CV currently supports a single target column.")
-        return y.iloc[:, 0].reset_index(drop=True)
+        return y.iloc[:, 0]
     if isinstance(y, pd.Series):
-        return y.reset_index(drop=True)
+        return y
     return pd.Series(y)
-def _default_rfe_values(n_features: int) -> List[int]:
-    if n_features <= 1:
-        return [1]
-    fractions = [0.25, 0.5, 0.75, 1.0]
-    values = [max(1, int(round(n_features * frac))) for frac in fractions]
-    unique: List[int] = []
-    for value in values:
-        value = min(n_features, value)
-        if value not in unique:
-            unique.append(value)
-    if n_features not in unique:
-        unique.append(n_features)
-    return unique
 
+def _sanitize_param_grid(grid: Dict[str, Any], n_features: int) -> Dict[str, Any]:
+    sanitized = {}
 
-def _is_distribution_candidate(value: Any) -> bool:
-    return hasattr(value, "rvs") and callable(getattr(value, "rvs"))
-
-
-def _sanitize_param_grid(
-    grid: Dict[str, Any], n_features: int, include_rfe: bool
-) -> Dict[str, Any]:
-    sanitized: Dict[str, Any] = {}
     for key, raw_values in grid.items():
-        if _is_distribution_candidate(raw_values):
-            values = raw_values
-        elif isinstance(raw_values, (list, tuple)):
+        # Distribution case
+        if hasattr(raw_values, "rvs"):
+            sanitized[key] = raw_values
+            continue
+
+        # Normal list-or-single value case
+        if isinstance(raw_values, (list, tuple)):
             values = list(raw_values)
         else:
             values = [raw_values]
 
-        if key == "select__k":
-            raise ValueError(
-                "Manual configuration of select__k is no longer supported. "
-                "Set feature_selection='univariate' to enable automatic selection."
-            )
-        elif key == "rfe__n_features_to_select":
-            filtered_rfe: List[int] = []
-            for value in values:
-                if value is None:
-                    filtered_rfe.append(n_features)
-                elif isinstance(value, str) and value.lower() == "all":
-                    filtered_rfe.append(n_features)
-                elif isinstance(value, int) and 1 <= value <= n_features:
-                    filtered_rfe.append(value)
-            if not filtered_rfe:
-                filtered_rfe = _default_rfe_values(n_features)
-            sanitized[key] = filtered_rfe
-        elif _is_distribution_candidate(values):
-            sanitized[key] = values
-        else:
-            sanitized[key] = values
+        # Handle RFE explicitly
+        if key == "rfe__n_features_to_select":
+            filtered = []
+            for v in values:
+                if v is None or v == "all":
+                    filtered.append(n_features)
+                elif isinstance(v, int) and 1 <= v <= n_features:
+                    filtered.append(v)
+            sanitized[key] = filtered
+            continue
 
-    if include_rfe and "rfe__n_features_to_select" not in sanitized:
-        sanitized["rfe__n_features_to_select"] = _default_rfe_values(n_features)
+        sanitized[key] = values
+
     return sanitized
 
 
 def _estimator_supports_feature_selection(
     feature_selection: str,
     estimator: BaseEstimator,
-    preprocessor,
     X_sample: pd.DataFrame,
     y_sample: pd.Series,
 ) -> bool:
-    """Return True when the estimator can drive the requested feature selection."""
+    # Always allow usage; fallback happens later if sklearn raises
     if feature_selection in {"none", "univariate"}:
         return True
-    if feature_selection not in {"rfe", "rfecv"}:
-        return False
+    if feature_selection in {"rfe", "rfecv"}:
+        return True
+    return False
 
-    try:
-        steps = []
-        if preprocessor is not None:
-            steps.append(("preprocess", clone(preprocessor)))
-        steps.append(("estimator", clone(estimator)))
-        probe = Pipeline(steps=steps)
-    except Exception:
-        return False
-
-    try:
-        probe.fit(X_sample, y_sample)
-    except Exception:
-        return False
-
-    fitted = probe.named_steps.get("estimator")
-    if fitted is None:
-        return False
-
-    return any(
-        hasattr(fitted, attr) for attr in ("feature_importances_", "coef_")
-    )
 
 
 def _resolve_search_space(
     model_name: str, config: PipelineConfig, n_features: int
 ) -> Dict[str, Any]:
+    # Only use user-provided search spaces
     user_spaces = getattr(config, "search_spaces", {}) or {}
-    include_rfe = getattr(config, "use_rfe", False)
-    if model_name in user_spaces:
-        return _sanitize_param_grid(
-            user_spaces[model_name], n_features, include_rfe
-        )
 
-    defaults: Dict[str, Any] = {}
-    if model_name == "logistic_regression":
-        defaults = {
-            "estimator__C": [0.01, 0.1, 1.0, 10.0],
-            "estimator__solver": ["lbfgs", "saga"],
-        }
-    elif model_name == "random_forest":
-        defaults = {
-            "estimator__n_estimators": [200, 400, 600],
-            "estimator__max_depth": [None, 10, 20],
-            "estimator__min_samples_split": [2, 5],
-        }
-    return _sanitize_param_grid(defaults, n_features, include_rfe)
+    # Return the grid if provided, otherwise empty dict
+    raw_grid = user_spaces.get(model_name, {})
+
+    return _sanitize_param_grid(raw_grid, n_features)
 
 
 def _selected_feature_count(feature_selection: str, pipeline: Pipeline) -> int | None:
@@ -311,8 +249,8 @@ class FixedFeatureSelector(BaseEstimator, TransformerMixin):
         return [name for name, keep in zip(input_features, self.support_mask) if keep]
 
 
-def _build_pipeline(feature_selection: str, preprocessor, estimator, scoring: str | None = None, cv_splits: int = 5):
-    steps = [("preprocess", clone(preprocessor))]
+def _build_pipeline(feature_selection: str, fold_preprocessor, estimator, scoring: str | None = None, cv_splits: int = 5):
+    steps = [("preprocess", clone(fold_preprocessor))]
     if feature_selection == "univariate":
         steps.append(("select", SelectKBest(score_func=partial(mutual_info_classif, random_state=PipelineConfig.random_state))))
     elif feature_selection == "rfe":
@@ -325,345 +263,375 @@ def _build_pipeline(feature_selection: str, preprocessor, estimator, scoring: st
 
 
 
-def _finalize_rfecv_pipeline(pipeline: Pipeline, X: pd.DataFrame, y, config: PipelineConfig, scoring_code: str | None):
-    if "rfecv" not in pipeline.named_steps:
+def _finalize_rfecv_pipeline(
+    pipeline: Pipeline,
+    X: pd.DataFrame,
+    y: pd.Series,
+    config: PipelineConfig,
+    scoring_code: str | None,
+    *,
+    batch_labels
+):
+    """
+    Finalize an RFECV/RFE pipeline by freezing feature selection into a
+    FixedFeatureSelector, then refitting preprocess + selector + estimator.
+
+    batch_labels is REQUIRED because preprocessors like CombatCorrector
+    need metadata during refit.
+    """
+
+    # If no RFECV/RFE step exists → nothing to finalize
+    if "rfecv" not in pipeline.named_steps and "rfe" not in pipeline.named_steps:
         return pipeline
 
-    rfecv_step = pipeline.named_steps["rfecv"]
-    support = getattr(rfecv_step, "support_", None)
+    # Extract selector depending on mode
+    selector = pipeline.named_steps.get("rfecv") or pipeline.named_steps.get("rfe")
+    support = getattr(selector, "support_", None)
+
+    # If selector failed or did not compute support → return raw pipeline
     if support is None:
         return pipeline
 
-    preprocessor = pipeline.named_steps.get("preprocess")
-    estimator = pipeline.named_steps.get("estimator")
-    fixed_selector = FixedFeatureSelector(support)
+    support = np.asarray(support, dtype=bool)
 
+    # Pull relevant steps from original pipeline
+    pre = pipeline.named_steps.get("preprocess")
+    est = pipeline.named_steps.get("estimator")
+
+    # Build a clean pipeline with frozen selector
     finalized_steps = []
-    if preprocessor is not None:
-        finalized_steps.append(("preprocess", clone(preprocessor)))
-    finalized_steps.append(("feature_select", fixed_selector))
-    if estimator is not None:
-        finalized_steps.append(("estimator", clone(estimator)))
+    if pre is not None:
+        finalized_steps.append(("preprocess", clone(pre)))
+
+    finalized_steps.append(("feature_select", FixedFeatureSelector(support)))
+
+    if est is not None:
+        finalized_steps.append(("estimator", clone(est)))
 
     finalized = Pipeline(finalized_steps)
-    finalized.fit(X, y)
+
+    # CRITICAL: pass batch_labels for CombatCorrector
+    finalized.fit(X, y, batch_labels=batch_labels)
+
     finalized.selected_support_ = support
-    finalized.rfecv_cv_results_ = getattr(rfecv_step, "cv_results_", None)
+    finalized.rfecv_cv_results_ = getattr(selector, "cv_results_", None)
+
     return finalized
 
-def nested_cross_validate_models(
-    models: Dict[str, BaseEstimator],
-    preprocessor,
-    X,
-    y,
-    config: PipelineConfig,
-) -> Tuple[pd.DataFrame, Dict[str, BaseEstimator]]:
-    scoring = scoring_map(config.task_type)
-    if not scoring:
-        raise ValueError(f"No scoring metrics defined for task type '{config.task_type}'.")
-    primary_metric = next(iter(scoring))
 
-    X_df = _ensure_frame(X)
-    y_series = _ensure_series(y)
+def _get_classes_from_pipeline(p):
+    """Extract classes_ from pipeline or estimator."""
+    if hasattr(p, "classes_"):
+        return p.classes_
+    if hasattr(p, "named_steps") and "estimator" in p.named_steps:
+        est = p.named_steps["estimator"]
+        return getattr(est, "classes_", None)
+    return None
 
-    if y_series.isna().any():
-        valid_mask = ~y_series.isna()
-        X_df = X_df.loc[valid_mask].reset_index(drop=True)
-        y_series = y_series.loc[valid_mask].reset_index(drop=True)
 
-    label_encoder: LabelEncoder | None = None
-    unique_labels = pd.Index(y_series.unique())
-    if config.task_type == "binary":
-        if len(unique_labels) != 2:
-            raise ValueError(
-                "Binary classification requires exactly two classes in the target. "
-                f"Observed {len(unique_labels)} unique labels."
-            )
+def _compute_roc_payload(best_pipeline, X_test, y_test, classes, task_type, test_batches):
+    """Unified ROC computation for binary + multiclass."""
+    from sklearn.metrics import roc_curve
+    has_proba = hasattr(best_pipeline, "predict_proba")
+    has_df = hasattr(best_pipeline, "decision_function")
 
-    needs_encoding = False
-    if config.task_type == "binary":
-        needs_encoding = not set(unique_labels).issubset({0, 1})
-    elif config.task_type == "multiclass":
-        needs_encoding = True
+    scores = None
 
-    if needs_encoding:
-        label_encoder = LabelEncoder()
-        y_series = pd.Series(
-            label_encoder.fit_transform(y_series), index=y_series.index
-        )
+    # get model scores
+    if has_proba:
+        scores = best_pipeline.predict_proba(X_test, batch_labels=test_batches)
+    elif has_df:
+        scores = best_pipeline.decision_function(X_test, batch_labels=test_batches)
+    else:
+        return None
 
-    outer_cv = build_outer_cv(config)
-    inner_cv = build_inner_cv(config)
-    scorers = {name: get_scorer(code) for name, code in scoring.items()}
+    scores = np.asarray(scores)
 
-    records: List[Dict[str, Any]] = []
-    fold_history: Dict[str, List[Dict[str, Any]]] = {}
-    best_estimators: Dict[str, BaseEstimator] = {}
+    # ---- BINARY ROC ----
+    if task_type == "binary":
+        if scores.ndim == 2 and scores.shape[1] > 1:
+            # positive class index
+            class_list = list(classes) if classes is not None else [0, 1]
+            pos_idx = class_list.index(1) if 1 in class_list else scores.shape[1] - 1
+            pos_scores = scores[:, pos_idx]
+        else:
+            pos_scores = scores.ravel()
 
-    feature_selection = getattr(config, "feature_selection", "none")
-    selection_support_cache: Dict[Tuple[str, str], bool] = {}
+        try:
+            fpr, tpr, thr = roc_curve(y_test, pos_scores)
+            return {"fpr": fpr.tolist(), "tpr": tpr.tolist(), "thresholds": thr.tolist()}
+        except ValueError:
+            return None
 
-    for model_name, estimator in models.items():
-        model_feature_selection = feature_selection
-        cache_key = (model_name, model_feature_selection)
-        supports_selection = selection_support_cache.get(cache_key)
-        if supports_selection is None:
-            supports_selection = _estimator_supports_feature_selection(
-                model_feature_selection,
-                estimator,
-                preprocessor,
-                X_df,
-                y_series,
-            )
-            selection_support_cache[cache_key] = supports_selection
-        if not supports_selection:
-            model_feature_selection = "none"
+    # ---- MULTICLASS ROC ----
+    payload = {"per_class": []}
+    y_values = y_test.to_numpy()
+    if classes is None:
+        classes = np.arange(scores.shape[1])
 
-        fold_scores: Dict[str, List[float]] = {metric: [] for metric in scoring}
-        fold_history[model_name] = []
-        for fold_idx, (train_idx, test_idx) in enumerate(outer_cv.split(X_df, y_series)):
-            X_train, X_test = X_df.iloc[train_idx], X_df.iloc[test_idx]
-            y_train, y_test = y_series.iloc[train_idx], y_series.iloc[test_idx]
+    for idx, c in enumerate(classes):
+        if idx >= scores.shape[1]:
+            continue
+        binary = (y_values == c).astype(int)
+        if binary.sum() == 0 or binary.sum() == len(binary):
+            continue
+        try:
+            fpr, tpr, thr = roc_curve(binary, scores[:, idx])
+            payload["per_class"].append({
+                "class_label": c,
+                "fpr": fpr.tolist(),
+                "tpr": tpr.tolist(),
+                "thresholds": thr.tolist(),
+            })
+        except ValueError:
+            pass
 
-            pipeline = _build_pipeline(
-                model_feature_selection,
-                preprocessor,
-                estimator,
-                scoring.get(primary_metric),
-                inner_cv.get_n_splits(),
-            )
+    return payload if payload["per_class"] else None
 
-            param_grid = _resolve_search_space(model_name, config, X_train.shape[1])
 
-            if model_feature_selection != "rfe" and "rfe__n_features_to_select" in param_grid:
-                param_grid = {
-                    k: v for k, v in param_grid.items() if k != "rfe__n_features_to_select"
-                }
+def _fit_with_search(X, y, batches, config, model_feature_selection,
+                     estimator, primary_metric, inner_cv, scoring, model_name=None):
+    """
+    Performs hyperparameter search with optional RFE/RFECV.
+    If RFE/RFECV fails (estimator doesn't support coef_ or errors occur),
+    it gracefully falls back to feature_selection='none'.
+    """
 
-            search = RandomizedSearchCV(
-                pipeline,
-                param_distributions=param_grid,
-                scoring=scoring,
-                refit=primary_metric,
-                cv=inner_cv,
-                n_jobs=-1,
-            )
-            search.fit(X_train, y_train)
+    def run_search(feature_selection_mode):
+        """Internal helper to build & run a search once."""
+        preprocessor = build_fold_preprocessor(batch_labels=batches)
 
-            best_pipeline = search.best_estimator_
-            best_pipeline = _finalize_rfecv_pipeline(best_pipeline, X_train, y_train, config, scoring.get(primary_metric))
-            fold_result: Dict[str, Any] = {
-                "outer_fold": fold_idx,
-                "best_params": search.best_params_,
-            }
-
-            classes = getattr(best_pipeline, "classes_", None)
-            if classes is None and hasattr(best_pipeline, "named_steps"):
-                estimator_step = best_pipeline.named_steps.get("estimator")
-                classes = getattr(estimator_step, "classes_", None)
-
-            try:
-                y_pred = best_pipeline.predict(X_test)
-            except Exception:
-                y_pred = None
-            else:
-                if label_encoder is not None:
-                    label_range = np.arange(len(label_encoder.classes_))
-                    cm = confusion_matrix(y_test, y_pred, labels=label_range)
-                    cm_labels = label_encoder.inverse_transform(label_range).tolist()
-                else:
-                    if classes is not None:
-                        label_values = list(classes)
-                    else:
-                        merged = np.concatenate([y_train.to_numpy(), y_test.to_numpy()])
-                        label_values = list(pd.Index(np.unique(merged)))
-                    cm = confusion_matrix(y_test, y_pred, labels=label_values)
-                    cm_labels = label_values
-                cm_labels = [
-                    label.item() if isinstance(label, np.generic) else label for label in cm_labels
-                ]
-                fold_result["confusion_matrix"] = cm.tolist()
-                fold_result["confusion_matrix_labels"] = cm_labels
-
-            roc_curve_payload = None
-            has_predict_proba = hasattr(best_pipeline, "predict_proba")
-            has_decision_function = hasattr(best_pipeline, "decision_function")
-
-            if config.task_type == "binary" and has_predict_proba:
-                proba = None
-                try:
-                    proba = best_pipeline.predict_proba(X_test)
-                except Exception:
-                    proba = None
-                if proba is not None:
-                    proba = np.asarray(proba)
-                    if proba.ndim == 2 and proba.shape[1] > 1:
-                        if classes is None and hasattr(best_pipeline, "named_steps"):
-                            estimator_step = best_pipeline.named_steps.get("estimator")
-                            classes = getattr(estimator_step, "classes_", None)
-                        class_list = list(classes) if classes is not None else None
-                        pos_index = -1
-                        if class_list is not None and 1 in class_list:
-                            pos_index = class_list.index(1)
-                        if pos_index < 0:
-                            pos_index = proba.shape[1] - 1
-                        pos_scores = proba[:, pos_index]
-                    else:
-                        pos_scores = proba.ravel()
-                    try:
-                        fpr, tpr, thresholds = roc_curve(y_test, pos_scores)
-                    except ValueError:
-                        roc_curve_payload = None
-                    else:
-                        roc_curve_payload = {
-                            "fpr": fpr.tolist(),
-                            "tpr": tpr.tolist(),
-                            "thresholds": thresholds.tolist(),
-                        }
-            elif (
-                config.task_type == "multiclass"
-                and (has_predict_proba or has_decision_function)
-            ):
-                class_scores = None
-                try:
-                    if has_predict_proba:
-                        class_scores = best_pipeline.predict_proba(X_test)
-                    else:
-                        class_scores = best_pipeline.decision_function(X_test)
-                except Exception:
-                    class_scores = None
-
-                if class_scores is not None:
-                    scores = np.asarray(class_scores)
-                    if scores.ndim == 1:
-                        scores = scores.reshape(-1, 1)
-                    if classes is None and hasattr(best_pipeline, "named_steps"):
-                        estimator_step = best_pipeline.named_steps.get("estimator")
-                        classes = getattr(estimator_step, "classes_", None)
-                    if classes is None:
-                        classes = np.arange(scores.shape[1])
-                    class_list = list(classes)
-                    per_class_curves: List[Dict[str, Any]] = []
-                    y_test_values = y_test.to_numpy()
-                    for idx, encoded_label in enumerate(class_list):
-                        if scores.shape[1] <= idx:
-                            continue
-                        binary_targets = (y_test_values == encoded_label).astype(int)
-                        # Need at least one positive and one negative sample to compute ROC.
-                        if binary_targets.sum() == 0 or binary_targets.sum() == binary_targets.size:
-                            continue
-                        try:
-                            fpr, tpr, thresholds = roc_curve(binary_targets, scores[:, idx])
-                        except ValueError:
-                            continue
-                        display_label = encoded_label
-                        if label_encoder is not None:
-                            display_label = label_encoder.inverse_transform([encoded_label])[0]
-                        if isinstance(display_label, np.generic):
-                            display_label = display_label.item()
-                        per_class_curves.append(
-                            {
-                                "class_label": display_label,
-                                "fpr": fpr.tolist(),
-                                "tpr": tpr.tolist(),
-                                "thresholds": thresholds.tolist(),
-                            }
-                        )
-                    if per_class_curves:
-                        roc_curve_payload = {"per_class": per_class_curves}
-            if roc_curve_payload is not None:
-                fold_result["roc_curve"] = roc_curve_payload
-
-            feature_count = _selected_feature_count(model_feature_selection, best_pipeline)
-            if feature_count is None:
-                feature_count = X_train.shape[1]
-            fold_result["selected_feature_count"] = feature_count
-
-            selected_features = "All"
-            if model_feature_selection in {"univariate", "rfe", "rfecv"}:
-                selected_features = _selected_feature_names(
-                    model_feature_selection,
-                    best_pipeline,
-                    list(X_train.columns),
-                )
-            fold_result["selected_features"] = selected_features
-            fold_result["feature_selection"] = model_feature_selection
-
-            for metric_name, scorer in scorers.items():
-                score_value = float(scorer(best_pipeline, X_test, y_test))
-                fold_scores[metric_name].append(score_value)
-                fold_result[f"test_{metric_name}"] = score_value
-
-            fold_history[model_name].append(fold_result)
-        print(f"Completed nested CV for model '{model_name}'.")
-        # Final fit on all data
-        final_pipeline = _build_pipeline(
-            model_feature_selection,
+        pipeline = _build_pipeline(
+            feature_selection_mode,
             preprocessor,
             estimator,
             scoring.get(primary_metric),
             inner_cv.get_n_splits(),
         )
-        final_param_grid = _resolve_search_space(model_name, config, X_df.shape[1])
-        if model_feature_selection != "rfe" and "rfe__n_features_to_select" in final_param_grid:
-            final_param_grid = {
-                k: v
-                for k, v in final_param_grid.items()
-                if k != "rfe__n_features_to_select"
-            }
 
-        final_search = RandomizedSearchCV(
-            final_pipeline,
-            param_distributions=final_param_grid,
+        param_grid = _resolve_search_space(model_name, config, X.shape[1])
+
+        # Remove RFE params if this run does not use RFE
+        if feature_selection_mode != "rfe":
+            param_grid.pop("rfe__n_features_to_select", None)
+
+        search = RandomizedSearchCV(
+            pipeline,
+            param_distributions=param_grid,
             scoring=scoring,
             refit=primary_metric,
             cv=inner_cv,
             n_jobs=-1,
+            random_state=config.random_state
         )
-        final_search.fit(X_df, y_series)
-        best_pipeline = _finalize_rfecv_pipeline(final_search.best_estimator_, X_df, y_series, config, scoring.get(primary_metric))
-        if label_encoder is not None:
-            setattr(best_pipeline, "label_encoder_", label_encoder)
-        best_estimators[model_name] = best_pipeline
+        search.fit(X, y, batch_labels=batches)
+        return search
 
-        final_feature_count = _selected_feature_count(model_feature_selection, best_pipeline)
-        if final_feature_count is None:
-            final_feature_count = X_df.shape[1]
+    # =========================================
+    # Try ORIGINAL feature selection first
+    # =========================================
+    try:
+        search = run_search(model_feature_selection)
 
-        final_selected_features = "All"
-        if model_feature_selection in {"univariate", "rfe", "rfecv"}:
-            final_selected_features = _selected_feature_names(
-                model_feature_selection,
-                best_pipeline,
-                list(X_df.columns),
+    except Exception as e:
+        print(
+            f"[FEATURE] {model_feature_selection.upper()} FAILED for "
+            f"{estimator.__class__.__name__}. Falling back to 'none'. "
+            f"Error={type(e).__name__}: {e}"
+        )
+
+        # Retry with no feature selection
+        search = run_search("none")
+        model_feature_selection = "none"
+
+    # =========================================
+    # Finalize pipeline
+    # =========================================
+
+    best_pipeline = _finalize_rfecv_pipeline(
+        search.best_estimator_, X, y, config, scoring.get(primary_metric),batch_labels=batches
+    )
+
+    feat_count = _selected_feature_count(model_feature_selection, best_pipeline)
+    if feat_count is None:
+        feat_count = X.shape[1]
+
+    return best_pipeline, search.best_params_, feat_count
+
+
+def nested_cross_validate_models(
+    models: Dict[str, BaseEstimator],
+    X,
+    y,
+    config: PipelineConfig,
+):
+    print("\n========== NESTED CROSS-VALIDATION ==========")
+
+    scoring = scoring_map(config.task_type)
+    primary_metric = next(iter(scoring))
+    print(f"[INIT] Primary metric: {primary_metric}")
+
+    X_df = _ensure_frame(X)
+    y_series = _ensure_series(y)
+
+    # Batches
+    batches_all = X_df.index.get_level_values("batch")
+    print(f"[DATA] X={X_df.shape}, y={y_series.shape}, batches={batches_all.unique()}")
+
+    # Encode labels
+    le = LabelEncoder()
+    y_series = pd.Series(le.fit_transform(y_series), index=y_series.index)
+
+    outer_cv = build_outer_cv(config)
+    inner_cv = build_inner_cv(config)
+
+    feature_selection = getattr(config, "feature_selection", "none")
+    selection_cache = {}
+
+    results = []
+    fold_history = {}
+    final_models = {}
+
+    for model_name, estimator in models.items():
+        print(f"\n===== MODEL: {model_name} =====")
+
+        # determine if estimator supports RFE/RFECV
+        if (model_name, feature_selection) not in selection_cache:
+            ok = _estimator_supports_feature_selection(
+                feature_selection, estimator, X_df, y_series
+            )
+            selection_cache[(model_name, feature_selection)] = ok
+
+        supports = selection_cache[(model_name, feature_selection)]
+        true_feature_sel = feature_selection if supports else "none"
+        print(f"[FEATURE] {model_name}: using feature_selection={true_feature_sel}")
+
+        fold_history[model_name] = []
+        fold_scores = {m: [] for m in scoring}
+
+        # ---------- OUTER LOOP ----------
+        for fold_idx, (train_idx, test_idx) in enumerate(outer_cv.split(X_df, y_series)):
+            print(f"\n--- OUTER FOLD {fold_idx+1}/{outer_cv.n_splits} ---")
+
+            X_train = X_df.iloc[train_idx]
+            X_test = X_df.iloc[test_idx]
+            y_train = y_series.iloc[train_idx]
+            y_test = y_series.iloc[test_idx]
+
+            train_batches = X_train.index.get_level_values("batch")
+            test_batches = X_test.index.get_level_values("batch")
+
+            # Run inner CV search 
+            best_pipe, best_params, feat_count = _fit_with_search(
+                X_train, y_train, train_batches,
+                config, true_feature_sel,
+                estimator, primary_metric,
+                inner_cv, scoring, model_name=model_name,
+            )
+            # Record selected feature names
+            fold_selected_names = _selected_feature_names(
+                true_feature_sel,
+                best_pipe,
+                X_train.columns.tolist()
             )
 
-        summary: Dict[str, Any] = {
+            fold = {"outer_fold": fold_idx, "best_params": best_params}
+            fold["selected_feature_names"] = fold_selected_names
+            fold["selected_feature_count"] = feat_count
+
+            print(f"[SEARCH] Best params: {best_params}")
+            print(f"[FEATURE] Selected {feat_count} features")
+
+            # Predictions
+            try:
+                y_pred = best_pipe.predict(X_test, batch_labels=test_batches)
+            except Exception:
+                y_pred = None
+
+            # Confusion matrix
+            if y_pred is not None:
+                cm = confusion_matrix(y_test, y_pred)
+                fold["confusion_matrix"] = cm.tolist()
+
+            # ROC
+            classes = _get_classes_from_pipeline(best_pipe)
+            roc_payload = _compute_roc_payload(
+                best_pipe, X_test, y_test,
+                classes, config.task_type, test_batches
+            )
+            if roc_payload:
+                fold["roc_curve"] = roc_payload
+
+            # Compute metrics
+            if y_pred is not None:
+                for metric_name, scorer in scoring.items():
+                    score = get_scorer(scorer)._score_func(
+                        y_test,
+                        y_pred,
+                        **get_scorer(scorer)._kwargs
+                    )
+                    fold_scores[metric_name].append(score)
+                    fold[f"test_{metric_name}"] = float(score)
+
+            fold_history[model_name].append(fold)
+
+        # ---------- FINAL MODEL ON ALL DATA ----------
+        print("[FINAL] Training final model on all data...")
+        final_pipe, final_params, final_feat_count = _fit_with_search(
+            X_df, y_series, batches_all,
+            config, true_feature_sel,
+            estimator, primary_metric,
+            inner_cv, scoring, model_name=model_name, 
+        )
+        final_pipe.label_encoder_ = le
+        final_models[model_name] = final_pipe
+
+        # Extract final selected feature names
+        input_columns = list(X_df.columns)
+
+        if true_feature_sel in {"univariate", "rfe", "rfecv"}:
+            final_selected_names = _selected_feature_names(
+                true_feature_sel,
+                final_pipe,
+                input_columns
+            )
+        else:
+            final_selected_names = "All"
+
+        # Write summary entry
+        summary = {
             "model": model_name,
             "primary_metric": primary_metric,
-            "best_params_full_fit": final_search.best_params_,
-            "selected_feature_count": final_feature_count,
-            "selected_features": final_selected_features,
-            "feature_selection": model_feature_selection,
+            "best_params_full_fit": final_params,
+            "selected_feature_count": final_feat_count,
+            "selected_features": final_selected_names,
+            "feature_selection": true_feature_sel,
         }
-        for metric_name, values in fold_scores.items():
-            summary[f"mean_{metric_name}"] = float(np.mean(values))
-            summary[f"std_{metric_name}"] = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
 
-        records.append(summary)
-    print("Nested cross-validation completed for all models.")
-    leaderboard = pd.DataFrame(records).sort_values(
+        for metric_name, values in fold_scores.items():
+            summary[f"mean_{metric_name}"] = np.mean(values)
+            summary[f"std_{metric_name}"] = np.std(values) if len(values)>1 else 0
+
+        results.append(summary)
+
+    # ---------- Produce leaderboard ----------
+    leaderboard = pd.DataFrame(results).sort_values(
         by=f"mean_{primary_metric}", ascending=False
     ).reset_index(drop=True)
     leaderboard["fold_details"] = leaderboard["model"].map(fold_history)
+
+    print("\n========== NESTED CV COMPLETED ==========")
+
+    # ---- Log training run ----
     try:
         run_dir = log_training_run(
             config=config,
             leaderboard=leaderboard,
-            trained_models=best_estimators,
+            trained_models=final_models,
         )
         leaderboard.attrs["run_dir"] = str(run_dir)
-        print(f"Training run logged to: {run_dir}")
-    except Exception as exc:
-        raise RuntimeError(f"Failed to log training run: {exc}") from exc
-    return leaderboard, best_estimators
+        print(f"[LOG] Training run logged to: {run_dir}")
+    except Exception as e:
+        print(f"[LOG] Failed to log training run: {type(e).__name__}: {e}")
+
+    return leaderboard, final_models
