@@ -51,24 +51,6 @@ def _ensure_series(y) -> pd.Series:
     if isinstance(y, pd.Series):
         return y
     return pd.Series(y)
-def _default_rfe_values(n_features: int) -> List[int]:
-    if n_features <= 1:
-        return [1]
-    fractions = [0.25, 0.5, 0.75, 1.0]
-    values = [max(1, int(round(n_features * frac))) for frac in fractions]
-    unique: List[int] = []
-    for value in values:
-        value = min(n_features, value)
-        if value not in unique:
-            unique.append(value)
-    if n_features not in unique:
-        unique.append(n_features)
-    return unique
-
-
-def _is_distribution_candidate(value: Any) -> bool:
-    return hasattr(value, "rvs") and callable(getattr(value, "rvs"))
-
 
 def _sanitize_param_grid(grid: Dict[str, Any], n_features: int) -> Dict[str, Any]:
     sanitized = {}
