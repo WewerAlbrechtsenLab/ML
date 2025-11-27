@@ -7,7 +7,7 @@ from MSprocessing.preprocessing.normalization import normalize_sample
 from pimmslearn.sklearn.ae_transformer import AETransformer
 from pimmslearn.sklearn.cf_transformer import CollaborativeFilteringTransformer
 from inmoose.pycombat import pycombat_norm
-from src.utils.__init__ import set_global_seed
+from ml.utils.__init__ import set_global_seed
 from pimmslearn.sampling import sample_data
 from pimmslearn.sklearn.cf_transformer import (
     TabularCollab, Categorify, TransformBlock,
@@ -16,7 +16,7 @@ from pimmslearn.sklearn.cf_transformer import (
 from fastai.data.all import *
 from fastai.learner import Learner
 from fastai.callback.tracker import EarlyStoppingCallback
-from src.utils.config import PipelineConfig
+from ml.utils.config import PipelineConfig
 
 class CFImputer(BaseEstimator, TransformerMixin):
     """
