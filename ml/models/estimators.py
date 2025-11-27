@@ -7,7 +7,7 @@ from sklearn.base import BaseEstimator
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 
-from src.utils.config import PipelineConfig
+from ml.utils.config import PipelineConfig
 
 
 def _import_from_path(path: str) -> type[BaseEstimator]:
