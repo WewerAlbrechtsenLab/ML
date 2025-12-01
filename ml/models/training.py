@@ -332,16 +332,17 @@ def _get_classes_from_pipeline(p):
 def _compute_roc_payload(best_pipeline, X_test, y_test, classes, task_type, test_batches):
     """Unified ROC computation for binary + multiclass."""
     from sklearn.metrics import roc_curve
-    has_proba = hasattr(best_pipeline, "predict_proba")
-    has_df = hasattr(best_pipeline, "decision_function")
+    est = best_pipeline.named_steps.get("estimator")
+    has_proba = hasattr(est, "predict_proba")
+    has_df = hasattr(est, "decision_function")
 
     scores = None
 
     # get model scores
     if has_proba:
-        scores = best_pipeline.predict_proba(X_test, batch_labels=test_batches)
+        scores = est.predict_proba(X_test_transformed)
     elif has_df:
-        scores = best_pipeline.decision_function(X_test, batch_labels=test_batches)
+        scores = est.decision_function(X_test_transformed)
     else:
         return None
 
