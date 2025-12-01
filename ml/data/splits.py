@@ -1,5 +1,5 @@
 from __future__ import annotations
-from src.utils.config import PipelineConfig 
+from ml.utils.config import PipelineConfig 
 from typing import Optional, Sequence, Tuple
 
 import pandas as pd
