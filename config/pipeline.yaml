@@ -1,6 +1,6 @@
 data_path: ../data/raw_data.tsv
 target_cols:
-  - group
+  - 
 task_type: binary
 feature_cols: null
 outer_splits: 5
