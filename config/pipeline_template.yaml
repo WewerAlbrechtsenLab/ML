@@ -8,11 +8,6 @@ inner_splits: 2
 random_state: 42
 holdout_fraction: null 
 holdout_groups: # optional: specify classes of the target to hold out
-- Virus
-- MIS-C Full Recovery
-- Sepsis
-- Kawasaki
-- MIS-C During Admission
 feature_selection: rfecv # none, univariate, rfe, rfecv
 model_registry:
   # Bayesian / Gaussian
