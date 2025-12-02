@@ -238,6 +238,8 @@ class FixedFeatureSelector(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X):
+        if hasattr(X, "iloc"):
+            return X.iloc[:, self.support_mask]
         return X[:, self.support_mask]
 
     def get_support(self):
@@ -249,8 +251,14 @@ class FixedFeatureSelector(BaseEstimator, TransformerMixin):
         return [name for name, keep in zip(input_features, self.support_mask) if keep]
 
 
-def _build_pipeline(feature_selection: str, fold_preprocessor, estimator, scoring: str | None = None, cv_splits: int = 5):
-    steps = [("preprocess", clone(fold_preprocessor))]
+def _build_pipeline(feature_selection: str,
+                    fold_preprocessor, 
+                    estimator, 
+                    scoring: str | None = None, 
+                    cv_splits: int = 5):
+    steps = []
+    if fold_preprocessor is not None:
+        steps.append(("preprocess", clone(fold_preprocessor)))
     if feature_selection == "univariate":
         steps.append(("select", SelectKBest(score_func=partial(mutual_info_classif, random_state=PipelineConfig.random_state))))
     elif feature_selection == "rfe":
@@ -310,8 +318,12 @@ def _finalize_rfecv_pipeline(
 
     finalized = Pipeline(finalized_steps)
 
-    # CRITICAL: pass batch_labels for CombatCorrector
-    finalized.fit(X, y, batch_labels=batch_labels)
+    # CRITICAL: pass batch_labels for CombatCorrector if preprocessor exists
+    fit_kwargs = {}
+    if batch_labels is not None:
+        fit_kwargs["batch_labels"] = batch_labels
+
+    finalized.fit(X, y, **fit_kwargs)
 
     finalized.selected_support_ = support
     finalized.rfecv_cv_results_ = getattr(selector, "cv_results_", None)
@@ -338,10 +350,14 @@ def _compute_roc_payload(best_pipeline, X_test, y_test, classes, task_type, test
     scores = None
 
     # get model scores
+    pred_kwargs = {}
+    if test_batches is not None:
+        pred_kwargs["batch_labels"] = test_batches
+
     if has_proba:
-        scores = best_pipeline.predict_proba(X_test, batch_labels=test_batches)
+        scores = best_pipeline.predict_proba(X_test, **pred_kwargs)
     elif has_df:
-        scores = best_pipeline.decision_function(X_test, batch_labels=test_batches)
+        scores = best_pipeline.decision_function(X_test, **pred_kwargs)
     else:
         return None
 
@@ -399,7 +415,9 @@ def _fit_with_search(X, y, batches, config, model_feature_selection,
 
     def run_search(feature_selection_mode):
         """Internal helper to build & run a search once."""
-        preprocessor = build_fold_preprocessor(batch_labels=batches)
+        # Set preprocessor = None if no preprocessing is needed !
+        preprocessor = None
+        #preprocessor = build_fold_preprocessor(batch_labels=batches)
 
         pipeline = _build_pipeline(
             feature_selection_mode,
@@ -424,7 +442,11 @@ def _fit_with_search(X, y, batches, config, model_feature_selection,
             n_jobs=-1,
             random_state=config.random_state
         )
-        search.fit(X, y, batch_labels=batches)
+        fit_kwargs = {}
+        if batches is not None:
+            fit_kwargs["batch_labels"] = batches
+
+        search.fit(X, y, **fit_kwargs)
         return search
 
     # =========================================
@@ -474,9 +496,10 @@ def nested_cross_validate_models(
     X_df = _ensure_frame(X)
     y_series = _ensure_series(y)
 
-    # Batches
-    batches_all = X_df.index.get_level_values("batch")
-    print(f"[DATA] X={X_df.shape}, y={y_series.shape}, batches={batches_all.unique()}")
+    # Batches info (if preprocessor used)
+    batches_all = None
+    #batches_all = X_df.index.get_level_values("batch")
+    #print(f"[DATA] X={X_df.shape}, y={y_series.shape}, batches={batches_all.unique()}")
 
     # Encode labels
     le = LabelEncoder()
@@ -518,8 +541,10 @@ def nested_cross_validate_models(
             y_train = y_series.iloc[train_idx]
             y_test = y_series.iloc[test_idx]
 
-            train_batches = X_train.index.get_level_values("batch")
-            test_batches = X_test.index.get_level_values("batch")
+            # train_batches = X_train.index.get_level_values("batch")
+            # test_batches = X_test.index.get_level_values("batch")
+            train_batches = None
+            test_batches = None
 
             # Run inner CV search 
             best_pipe, best_params, feat_count = _fit_with_search(
@@ -543,10 +568,15 @@ def nested_cross_validate_models(
             print(f"[FEATURE] Selected {feat_count} features")
 
             # Predictions
+            pred_kwargs = {}
+            if test_batches is not None:
+                pred_kwargs["batch_labels"] = test_batches
+
             try:
-                y_pred = best_pipe.predict(X_test, batch_labels=test_batches)
+                y_pred = best_pipe.predict(X_test, **pred_kwargs)
             except Exception:
                 y_pred = None
+
 
             # Confusion matrix
             if y_pred is not None:

@@ -305,6 +305,7 @@ def build_fold_preprocessor(batch_labels):
     combat.set_fit_request(batch_labels=True)
     combat.set_transform_request(batch_labels=True)
 
+    # Choose preprocessing steps
     pre = SklearnPipeline([
         #("cf", CFImputer()),
         ("vae", VAEImputer()),  
