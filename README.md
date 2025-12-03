@@ -14,8 +14,8 @@ conda activate ml
 ```
 
 ## How to Run
-1. Edit `config/pipeline.yaml` to point to the dataset you want to use and adjust any model or feature-selection options. The training pipeline reads all settings from this file unless you set a holdout group from the targets classes.
-2. Run the notebook `notebooks/ML.ipynb` top to bottom. It loads the config, executes nested cross-validation, and logs results automatically.
+1. Edit `config/pipeline.yaml` to point to the dataset you want to use and adjust any model or feature-selection options. The training pipeline reads all settings from this file.
+2. Run the notebook `notebooks/ML.ipynb` top to bottom. It loads the config, executes nested cross-validation, and logs results automatically. You have to edit the preprocessor if you want to preprocess the data within each split.
 Additional data and feature engineering may be necessary and study depended and can be applied before the modeling. 
 
 ## Run Logging
