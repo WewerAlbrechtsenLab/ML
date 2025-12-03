@@ -11,31 +11,14 @@ import numpy as np
 import pandas as pd
 from matplotlib.figure import Figure
 from sklearn.metrics import ConfusionMatrixDisplay, RocCurveDisplay, auc
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
 
 try:  # Display inline when running inside a notebook.
     from IPython.display import display  # type: ignore
 except Exception:  # pragma: no cover
     display = None  # type: ignore
 
-
-def _find_roc_column(columns: Iterable[str]) -> str | None:
-    """Return the column name that holds mean ROC metrics, if any."""
-    preferred = [
-        "mean_roc_auc",
-        "mean_roc_auc_ovr",
-        "mean_roc_auc_ovo",
-        "mean_roc_auc_weighted",
-    ]
-
-    available = set(columns)
-    for candidate in preferred:
-        if candidate in available:
-            return candidate
-
-    for column in columns:
-        if column.startswith("mean_roc_auc"):
-            return column
-    return None
 
 
 def _coerce_fold_details(value: Any) -> List[Mapping[str, Any]]:
@@ -559,3 +542,21 @@ def plot_roc_from_leaderboard(leaderboard, model):
     plt.legend()
     plt.grid(alpha=0.3)
     plt.show()
+
+########################### ---------------------------###############################
+
+def butterfly_plot(df, var1, var2, var3, error1, error2, savepdf=True, group = 'model'):
+    fig = make_subplots(rows=1, cols=2, specs=[[{}, {}]], shared_xaxes=False, shared_yaxes=True, horizontal_spacing=0)
+    fig.append_trace(go.Bar(x = df[var1], y = df[group], text = df[var1], error_x=dict(type='data', array=df[error1]), error_y=dict(type='data', array=df[error1]),
+                        textposition='inside', orientation='h', width=0.7, 
+                        showlegend=False, marker_color='#4472c4'), 1, 1) # 1,1 represents row 1 column 1
+    fig.append_trace(go.Bar(x = df[var2], y = df[group], text = df[var2], error_x=dict(type='data', array=df[error2]), error_y=dict(type='data', array=df[error2]),
+                 textposition='inside', orientation='h', width=0.7, 
+                 showlegend=False, marker_color='#ed7d31'), 1, 2) # 1,2 represents row 1 column 2
+    fig.update_xaxes(title_text="Matthews Correlation Coefficient", row=1, col=1, range=[1,0])
+    fig.update_xaxes(title_text="AUROC", row=1, col=2)
+    fig.update_layout(width=800, height=700, title_x=0.5,xaxis1={'side': 'top'},xaxis2={'side': 'top'},)
+    fig.update_layout(template='plotly_white')
+    if savepdf:
+        fig.write_image('figures/3b.png')
+    fig.show()
