@@ -8,3 +8,5 @@ seaborn>=0.12
 joblib>=1.2
 shap>=0.48
 torch>=2.0
+kaleido
+nbformat>=4.2.0

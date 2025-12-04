@@ -6,9 +6,7 @@ feature_cols: null
 outer_splits: 2
 inner_splits: 2
 random_state: 42
-holdout_fraction: null 
-holdout_groups: null
-feature_selection: rfe # none, univariate, rfe, rfecv
+feature_selection: rfe # none
 model_registry:
   # Bayesian / Gaussian
   gaussian_nb:
