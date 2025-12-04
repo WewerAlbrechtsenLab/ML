@@ -21,12 +21,12 @@ model_registry:
       random_state: 42
 search_spaces:
   logistic_regression:
-    estimator__C: [0.1, 0.5, 1.0]
-    estimator__solver: [liblinear, saga]
-    estimator__penalty: [l1, l2]
+    C: [0.1, 0.5, 1.0]
+    solver: [liblinear, saga]
+    penalty: [l1, l2]
   decision_tree:
-    estimator__criterion: [gini, entropy]
-    estimator__splitter: [best, random]
-    estimator__min_samples_leaf: [1, 5, 10]
-    estimator__class_weight: [null, balanced]
+    criterion: [gini, entropy]
+    splitter: [best, random]
+    min_samples_leaf: [1, 5, 10]
+    class_weight: [null, balanced]
 output_dir: ../outputs

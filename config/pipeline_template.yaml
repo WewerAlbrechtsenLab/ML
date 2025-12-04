@@ -6,9 +6,7 @@ feature_cols: null
 outer_splits: 3 #choose your number of folds
 inner_splits: 2
 random_state: 42
-holdout_fraction: null 
-holdout_groups: # optional: specify classes of the target to hold out
-feature_selection: rfecv # none, univariate, rfe, rfecv
+feature_selection: rfecv # or none
 model_registry:
   # Bayesian / Gaussian
   gaussian_nb:
