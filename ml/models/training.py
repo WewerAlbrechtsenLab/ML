@@ -4,6 +4,9 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
+from pathlib import Path
+import pandas as pd
+import json
 from sklearn.base import BaseEstimator, TransformerMixin, clone
 from sklearn.metrics import confusion_matrix, get_scorer, roc_curve
 from sklearn.model_selection import StratifiedKFold, RandomizedSearchCV
@@ -32,6 +35,42 @@ def _ensure_series(y):
         return y.iloc[:, 0]
     return pd.Series(y)
 
+def write_leaderboard(results, primary_metric, fold_history, output_dir, prefix):
+    """
+    Safe leaderboard writer:
+    - Updates model-by-model.
+    - Never crashes if metrics are missing.
+    - Overwrites one stable file.
+    """
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    leaderboard = pd.DataFrame(results)
+
+    metric_col = f"mean_{primary_metric}"
+    if metric_col in leaderboard.columns:
+        leaderboard = leaderboard.sort_values(
+            by=metric_col,
+            ascending=False,
+            na_position="last"
+        )
+
+    leaderboard = leaderboard.reset_index(drop=True)
+
+    leaderboard["fold_details"] = leaderboard["model"].map(fold_history)
+
+    csv_path = output_dir / f"{prefix}.csv"
+    json_path = output_dir / f"{prefix}_folds.json"
+
+    try:
+        leaderboard.to_csv(csv_path, index=False)
+        json_path.write_text(json.dumps(fold_history, indent=2))
+        print(f"[LOG] Leaderboard updated: {csv_path}")
+    except Exception as e:
+        print(f"[WRITE ERROR] Could not write leaderboard: {e}")
+
+    return csv_path, json_path
 
 # -----------------------------------------------------------
 # ROC computation
@@ -136,7 +175,6 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
     scoring = scoring_map(config.task_type)
     primary_metric = next(iter(scoring))
 
-    # Encode labels
     le = LabelEncoder()
     y = pd.Series(le.fit_transform(y), index=y.index)
 
@@ -152,21 +190,67 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
         fold_history[model_name] = []
         fold_scores = {m: [] for m in scoring}
 
-        # --------------------------------------
-        # OUTER CV LOOP
-        # --------------------------------------
-        for fold_idx, (train_idx, test_idx) in enumerate(outer_cv.split(X, y)):
-            print(f"\n--- OUTER FOLD {fold_idx+1}/{config.outer_splits} ---")
+        try:
+            # -------- OUTER LOOP --------
+            for fold_idx, (train_idx, test_idx) in enumerate(outer_cv.split(X, y)):
+                print(f"\n--- OUTER FOLD {fold_idx+1}/{config.outer_splits} ---")
 
-            Xtr, Xte = X.iloc[train_idx], X.iloc[test_idx]
-            ytr, yte = y.iloc[train_idx], y.iloc[test_idx]
+                Xtr, Xte = X.iloc[train_idx], X.iloc[test_idx]
+                ytr, yte = y.iloc[train_idx], y.iloc[test_idx]
 
-            # No batches for now
-            batches_train, batches_test = None, None
+                tuned_estimator, best_params = run_hp_search(
+                    Xtr, ytr,
+                    base_estimator,
+                    config,
+                    scoring,
+                    primary_metric,
+                    inner_cv,
+                    model_name,
+                )
+                print(f"[HP-SEARCH] Best params: {best_params}")
 
-            # 1) Hyperparameter search on ALL features
-            tuned_estimator, best_params = run_hp_search(
-                Xtr, ytr,
+                mask = run_rfecv_once(
+                    Xtr, ytr,
+                    tuned_estimator,
+                    scoring[primary_metric],
+                    inner_cv,
+                    batches=None,
+                )
+
+                selected = X.columns[mask].tolist()
+                print(f"[RFECV] Selected {mask.sum()} features")
+
+                Xtr_sel = Xtr.loc[:, mask]
+                Xte_sel = Xte.loc[:, mask]
+
+                tuned_estimator = clone(tuned_estimator).fit(Xtr_sel, ytr)
+                y_pred = tuned_estimator.predict(Xte_sel)
+
+                fold = dict(
+                    outer_fold=fold_idx,
+                    best_params=best_params,
+                    selected_features=selected,
+                    selected_feature_count=int(mask.sum()),
+                    confusion_matrix=confusion_matrix(yte, y_pred).tolist(),
+                )
+
+                classes = tuned_estimator.classes_
+                roc_payload = compute_roc(tuned_estimator, Xte_sel, yte,
+                                          classes, config.task_type)
+                if roc_payload:
+                    fold["roc_curve"] = roc_payload
+
+                for m, scorer_code in scoring.items():
+                    scorer = get_scorer(scorer_code)
+                    score = scorer._score_func(yte, y_pred, **scorer._kwargs)
+                    fold_scores[m].append(score)
+                    fold[f"test_{m}"] = float(score)
+
+                fold_history[model_name].append(fold)
+
+            # -------- FINAL MODEL --------
+            tuned_full, final_params = run_hp_search(
+                X, y,
                 base_estimator,
                 config,
                 scoring,
@@ -174,113 +258,62 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                 inner_cv,
                 model_name,
             )
-            print(f"[HP-SEARCH] Best params: {best_params}")
+            print(f"[FINAL] Best params: {final_params}")
 
-            # 2) RFECV ONCE using tuned estimator
-            mask = run_rfecv_once(
-                Xtr, ytr,
-                tuned_estimator,
+            full_mask = run_rfecv_once(
+                X, y,
+                tuned_full,
                 scoring[primary_metric],
                 inner_cv,
-                batches=batches_train,
+                batches=None,
             )
-            selected = X.columns[mask].tolist()
-            print(f"[RFECV] Selected {mask.sum()} features")
 
-            # 3) Reduce data
-            Xtr_sel = Xtr.loc[:, mask]
-            Xte_sel = Xte.loc[:, mask]
+            selected_full = X.columns[full_mask].tolist()
+            print(f"[FINAL RFECV] Selected {full_mask.sum()} features")
 
-            # 4) Fit tuned_estimator on reduced features
-            tuned_estimator = clone(tuned_estimator)
-            tuned_estimator.fit(Xtr_sel, ytr)
+            final_model = clone(tuned_full).fit(X.loc[:, full_mask], y)
+            final_model.label_encoder_ = le
+            final_models[model_name] = (final_model, full_mask)
 
-            # 5) Predict on test fold
-            y_pred = tuned_estimator.predict(Xte_sel)
-
-            # Store fold metrics
-            fold = {
-                "outer_fold": fold_idx,
-                "best_params": best_params,
-                "selected_features": selected,
-                "selected_feature_count": int(mask.sum()),
-                "confusion_matrix": confusion_matrix(yte, y_pred).tolist(),
+            summary = {
+                "model": model_name,
+                "primary_metric": primary_metric,
+                "best_params_full_fit": final_params,
+                "selected_feature_count": int(full_mask.sum()),
+                "selected_features": selected_full,
             }
 
-            classes = tuned_estimator.classes_
-            roc_payload = compute_roc(tuned_estimator, Xte_sel, yte, classes, config.task_type)
-            if roc_payload:
-                fold["roc_curve"] = roc_payload
+            for m, values in fold_scores.items():
+                summary[f"mean_{m}"] = float(np.mean(values))
+                summary[f"std_{m}"] = float(np.std(values)) if len(values)>1 else 0.0
 
-            for m, scorer_code in scoring.items():
-                scorer = get_scorer(scorer_code)
-                score = scorer._score_func(yte, y_pred, **scorer._kwargs)
-                fold_scores[m].append(score)
-                fold[f"test_{m}"] = float(score)
+            results.append(summary)
 
-            fold_history[model_name].append(fold)
+            # ---- update leaderboard after every model ----
+            write_leaderboard(
+                results, primary_metric, fold_history,
+                config.output_dir, prefix="leaderboard_partial"
+            )
 
-        # --------------------------------------
-        # FINAL MODEL ON FULL DATA
-        # --------------------------------------
-        print("[FINAL] Searching best hyperparameters on full dataset...")
-        tuned_full, final_params = run_hp_search(
-            X, y,
-            base_estimator,
-            config,
-            scoring,
-            primary_metric,
-            inner_cv,
-            model_name,
-        )
+        except Exception as e:
+            print(f"[ERROR] Model '{model_name}' failed: {type(e).__name__}: {e}")
 
-        print("[FINAL] Running RFECV on full dataset...")
-        full_mask = run_rfecv_once(
-            X, y,
-            tuned_full,
-            scoring[primary_metric],
-            inner_cv,
-            batches=None,
-        )
-        selected_full = X.columns[full_mask].tolist()
-        print(f"[FINAL] Selected {full_mask.sum()} features")
+            results.append({
+                "model": model_name,
+                "primary_metric": primary_metric,
+                "error": f"{type(e).__name__}: {e}",
+            })
 
-        X_full_sel = X.loc[:, full_mask]
-        final_model = clone(tuned_full).fit(X_full_sel, y)
+            write_leaderboard(
+                results, primary_metric, fold_history,
+                config.output_dir, prefix="leaderboard_partial"
+            )
+            continue
 
-        final_model.label_encoder_ = le
-        final_models[model_name] = (final_model, full_mask)
+    # -------- FINAL LEADERBOARD --------
+    write_leaderboard(
+        results, primary_metric, fold_history,
+        config.output_dir, prefix="leaderboard_final"
+    )
 
-        summary = {
-            "model": model_name,
-            "primary_metric": primary_metric,
-            "best_params_full_fit": final_params,
-            "selected_feature_count": int(full_mask.sum()),
-            "selected_features": selected_full,
-        }
-
-        for m, values in fold_scores.items():
-            summary[f"mean_{m}"] = float(np.mean(values))
-            summary[f"std_{m}"] = float(np.std(values)) if len(values) > 1 else 0.0
-
-        results.append(summary)
-
-    leaderboard = pd.DataFrame(results).sort_values(
-        by=f"mean_{primary_metric}",
-        ascending=False,
-    ).reset_index(drop=True)
-
-    leaderboard["fold_details"] = leaderboard["model"].map(fold_history)
-
-    try:
-        run_dir = log_training_run(
-            config=config,
-            leaderboard=leaderboard,
-            trained_models=final_models,
-        )
-        leaderboard.attrs["run_dir"] = str(run_dir)
-        print(f"[LOG] Training run logged to: {run_dir}")
-    except Exception as e:
-        print(f"[LOG] Failed to log training: {e}")
-
-    return leaderboard, final_models
+    return pd.DataFrame(results), final_models
