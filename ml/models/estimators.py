@@ -15,17 +15,40 @@ def _import_from_path(path: str) -> type[BaseEstimator]:
     module = import_module(module_path)
     return getattr(module, class_name)
 
+def inspect_hyperparameters(models: dict, config: PipelineConfig):
+    """
+    Prints all models and their hyperparameter search spaces
+    Helps catch typos, wrong parameter names, or empty grids.
+    """
+    search_spaces = getattr(config, "search_spaces", {})
 
-def build_default_registry(task_type: str) -> Dict[str, BaseEstimator]:
-    estimators: Dict[str, BaseEstimator] = {
-        "logistic_regression": LogisticRegression(max_iter=1000),
-        "random_forest": RandomForestClassifier(random_state=42),
-    }
+    print("\n===== MODEL & HYPERPARAMETER CHECK =====\n")
 
-    if task_type == "multiclass":
-        estimators["logistic_regression"] = LogisticRegression(max_iter=1000, multi_class="auto")
+    for model_name, estimator in models.items():
+        print(f"• Model: {model_name}")
+        print(f"  Estimator: {estimator.__class__.__name__}")
 
-    return estimators
+        grid = search_spaces.get(model_name, {})
+
+        if not grid:
+            print("  Hyperparameters: <none> (using base estimator)")
+        else:
+            print("  Hyperparameters:")
+            for param, values in grid.items():
+                print(f"    - {param}: {values}")
+
+        # quick validation warning — avoid runtime crashes
+        invalid_params = [
+            p for p in grid.keys() if not hasattr(estimator, "get_params") 
+            or p not in estimator.get_params()
+        ]
+
+        if invalid_params:
+            print(f"  WARNING: Invalid hyperparameters for {model_name}: {invalid_params}")
+
+        print()
+
+    print("===== END CHECK =====\n")
 
 
 def build_models(config: PipelineConfig) -> Dict[str, BaseEstimator]:

@@ -1,11 +1,7 @@
 from __future__ import annotations
-
 import ast
-import json
-import math
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -21,466 +17,100 @@ except Exception:  # pragma: no cover
 
 
 
-def _coerce_fold_details(value: Any) -> List[Mapping[str, Any]]:
-    if value is None:
+
+def safe_decode_fold_details(x):
+    # Already decoded
+    if isinstance(x, (list, dict)):
+        return x
+    
+    if not isinstance(x, str):
         return []
-    if isinstance(value, str):
-        try:
-            value = ast.literal_eval(value)
-        except Exception:
-            return []
-    if isinstance(value, Mapping):
-        return [value]
-    if isinstance(value, Sequence):
-        result: List[Mapping[str, Any]] = []
-        for item in value:
-            if isinstance(item, Mapping):
-                result.append(item)
-        return result
-    return []
+
+    # Replace "inf" with a numeric value BEFORE parsing
+    cleaned = x.replace("inf", "1e309")  # float('inf') equivalent
+    
+    try:
+        return ast.literal_eval(cleaned)
+    except Exception:
+        print("FAILED TO DECODE ENTRY:", x[:200], "...")
+        return []
 
 
-def _collect_curves(fold_details: Any) -> Dict[Any, List[Dict[str, np.ndarray]]]:
-    grouped: Dict[Any, List[Dict[str, np.ndarray]]] = {}
-    for fold in _coerce_fold_details(fold_details):
-        curve = fold.get("roc_curve")
-        if not isinstance(curve, Mapping):
-            continue
-        per_class = curve.get("per_class")
-        if isinstance(per_class, Sequence) and per_class:
-            for class_entry in per_class:
-                if not isinstance(class_entry, Mapping):
-                    continue
-                fpr = class_entry.get("fpr")
-                tpr = class_entry.get("tpr")
-                thresholds = class_entry.get("thresholds")
-                if not isinstance(fpr, Sequence) or not isinstance(tpr, Sequence):
-                    continue
-                try:
-                    fpr_arr = np.asarray(fpr, dtype=float)
-                    tpr_arr = np.asarray(tpr, dtype=float)
-                    thr_arr = (
-                        np.asarray(thresholds, dtype=float)
-                        if thresholds is not None
-                        else None
-                    )
-                except Exception:
-                    continue
-                if fpr_arr.size == 0 or tpr_arr.size == 0:
-                    continue
-                label = class_entry.get("class_label")
-                grouped.setdefault(label, []).append(
-                    {"fpr": fpr_arr, "tpr": tpr_arr, "thresholds": thr_arr}
-                )
-            continue
-        fpr = curve.get("fpr")
-        tpr = curve.get("tpr")
-        thresholds = curve.get("thresholds")
-        if not isinstance(fpr, Sequence) or not isinstance(tpr, Sequence):
-            continue
-        try:
-            fpr_arr = np.asarray(fpr, dtype=float)
-            tpr_arr = np.asarray(tpr, dtype=float)
-            thr_arr = np.asarray(thresholds, dtype=float) if thresholds is not None else None
-        except Exception:
-            continue
-        if fpr_arr.size == 0 or tpr_arr.size == 0:
-            continue
-        label = curve.get("label")
-        grouped.setdefault(label, []).append(
-            {"fpr": fpr_arr, "tpr": tpr_arr, "thresholds": thr_arr}
-        )
-    return grouped
-
-
-def _collect_confusion_matrices(fold_details: Any) -> List[tuple[np.ndarray, List[Any]]]:
-    matrices: List[tuple[np.ndarray, List[Any]]] = []
-    for fold in _coerce_fold_details(fold_details):
-        matrix = fold.get("confusion_matrix")
-        if matrix is None:
-            continue
-        labels = fold.get("confusion_matrix_labels")
-        arr = np.asarray(matrix, dtype=float)
-        if arr.ndim != 2:
-            continue
-        if labels is None:
-            label_count = arr.shape[0]
-            labels = list(range(label_count))
-        matrices.append((arr, list(labels)))
-    return matrices
-
-
-def _aggregate_curves(curves: List[Dict[str, np.ndarray]], fpr_grid: np.ndarray) -> tuple[np.ndarray | None, np.ndarray | None]:
-    if not curves:
-        return None, None
-    interpolated: List[np.ndarray] = []
-    for curve in curves:
-        fpr = np.asarray(curve["fpr"], dtype=float)
-        tpr = np.asarray(curve["tpr"], dtype=float)
-        if fpr.size == 0 or tpr.size == 0:
-            continue
-        order = np.argsort(fpr)
-        fpr_sorted = fpr[order]
-        tpr_sorted = tpr[order]
-        interp = np.interp(fpr_grid, fpr_sorted, tpr_sorted, left=0.0, right=1.0)
-        interpolated.append(interp)
-    if not interpolated:
-        return None, None
-    stack = np.vstack(interpolated)
-    mean = stack.mean(axis=0)
-    std = stack.std(axis=0) if stack.shape[0] > 1 else None
-    return mean, std
-
-
-def _iter_leaderboard_records(leaderboard: Any) -> List[Dict[str, Any]]:
-    if isinstance(leaderboard, pd.DataFrame):
-        return leaderboard.to_dict(orient="records")
-    if isinstance(leaderboard, Mapping):
-        return [dict(leaderboard)]
-    if isinstance(leaderboard, Sequence):
-        records: List[Dict[str, Any]] = []
-        for item in leaderboard:
-            if isinstance(item, Mapping):
-                records.append(dict(item))
-        return records
-    raise TypeError("Unsupported leaderboard input; expected DataFrame or sequence of mappings.")
-
-
-def _aggregate_confusion_matrix(matrices: List[tuple[np.ndarray, List[Any]]]) -> tuple[np.ndarray | None, List[Any] | None]:
-    if not matrices:
-        return None, None
-    agg_df: pd.DataFrame | None = None
-    for arr, labels in matrices:
-        labels_list = list(labels)
-        df = pd.DataFrame(arr, index=labels_list, columns=labels_list, dtype=float)
-        agg_df = df if agg_df is None else agg_df.add(df, fill_value=0)
-    if agg_df is None:
-        return None, None
-    agg_df = agg_df.fillna(0)
-    order = list(agg_df.index)
-    agg_df = agg_df.reindex(index=order, columns=order, fill_value=0)
-    return agg_df.to_numpy(), order
-
-
-def _normalize_confusion_matrix(matrix: np.ndarray, mode: str | None) -> np.ndarray:
-    if mode is None:
-        return matrix
-    normalized = matrix.astype(float, copy=True)
-    if mode == "true":
-        denom = normalized.sum(axis=1, keepdims=True)
-    elif mode == "pred":
-        denom = normalized.sum(axis=0, keepdims=True)
-    elif mode == "all":
-        denom = np.array([[normalized.sum()]])
-    else:
-        raise ValueError("normalize must be one of {'true', 'pred', 'all', None}.")
-    with np.errstate(divide="ignore", invalid="ignore"):
-        normalized = np.divide(normalized, denom, out=np.zeros_like(normalized), where=denom != 0)
-    return normalized
-
-
-def plot_cv_roc_curves(
-    leaderboard: Any,
-    output_path: Path | str | None = None,
-    *,
-    show: bool = True,
-    fpr_grid: np.ndarray | None = None,
-    default_output_dir: Path | None = None,
-    models: Sequence[str] | None = None,
-) -> Figure:
-    """Plot mean ROC curves across CV folds for each model in the leaderboard.
-
-    Parameters
-    ----------
-    leaderboard:
-        Either the in-memory leaderboard DataFrame (with a ``fold_details`` column)
-        or a sequence of dictionaries with the same structure (e.g., loaded from metrics.json).
-    output_path:
-        Optional destination path for the figure. If omitted, the function will attempt
-        to place the plot in ``default_output_dir`` or the run directory attached to the
-        DataFrame via ``leaderboard.attrs['run_dir']``.
-    show:
-        When True (default), display the plot (ideal for notebooks).
-    fpr_grid:
-        Optional array of FPR points to use for interpolation. Defaults to 101 points in [0, 1].
-    default_output_dir:
-        Fallback directory used when ``output_path`` is not provided.
-    models:
-        Optional iterable of model names to include. When omitted, every model present in the
-        leaderboard is plotted.
-
-    Returns
-    -------
-    matplotlib.figure.Figure
-        The generated ROC summary figure.
+def plot_all_roc_from_leaderboard(leaderboard):
     """
-    records = _iter_leaderboard_records(leaderboard)
-    if not records:
-        raise ValueError("Leaderboard is empty; cannot plot ROC curves.")
+    Plots mean ROC curves for all models.
+    Supports binary + multiclass ROC.
+    Automatically decodes fold_details from CSV.
+    """
 
-    grid = np.linspace(0.0, 1.0, 101) if fpr_grid is None else np.asarray(fpr_grid, dtype=float)
-    if grid.ndim != 1:
-        raise ValueError("fpr_grid must be a 1D array of false-positive rates.")
+    # ---- 1) Decode fold_details safely ----
+    leaderboard = leaderboard.copy()
 
-    allowed_models = set(models) if models is not None else None
-    model_curves: List[tuple[str, Dict[Any, List[Dict[str, np.ndarray]]], Dict[str, Any]]] = []
-    for record in records:
-        model_name = record.get("model")
-        if not model_name:
-            continue
-        if allowed_models is not None and model_name not in allowed_models:
-            continue
-        curves_by_label = _collect_curves(record.get("fold_details"))
-        if curves_by_label:
-            model_curves.append((model_name, curves_by_label, record))
+    def safe_decode(x):
+        if isinstance(x, (dict, list)):
+            return x
+        try:
+            return ast.literal_eval(x)
+        except Exception:
+            print("Failed to decode fold_details entry:", x)
+            return []
+    
+    leaderboard["fold_details"] = leaderboard["fold_details"].apply(safe_decode)
 
-    if not model_curves:
-        raise ValueError(
-            "No ROC curve data found. Ensure the training pipeline captured fold-level probabilities."
-        )
+    # ---- 2) Prepare plot ----
+    plt.figure(figsize=(8, 7))
+    grid = np.linspace(0, 1, 300)
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1, label="Chance")
+    # ---- 3) Iterate models ----
+    for _, row in leaderboard.iterrows():
+        model = row["model"]
+        folds = row["fold_details"]
 
-    total_series = sum(len(curves_by_label) for _, curves_by_label, _ in model_curves)
-    color_map = plt.cm.get_cmap("tab20" if total_series > 10 else "tab10")
-    colors = color_map(np.linspace(0, 1, max(total_series, 1)))
+        per_class_curves = {}
 
-    color_idx = 0
-    for model_name, curves_by_label, record in model_curves:
-        for label_key, curve_list in curves_by_label.items():
-            mean_tpr, std_tpr = _aggregate_curves(curve_list, grid)
-            if mean_tpr is None:
+        # ---- Collect ROC curves ----
+        for fold in folds:
+            roc = fold.get("roc_curve")
+            if roc is None:
                 continue
 
-            mean_auc = float(auc(grid, mean_tpr))
-            if label_key is None or label_key == "":
-                legend_label = f"{model_name} (mean AUC={mean_auc:.3f})"
-            else:
-                legend_label = f"{model_name} [{label_key}] (mean AUC={mean_auc:.3f})"
+            # Binary case
+            if "fpr" in roc:
+                per_class_curves.setdefault("binary", []).append(
+                    (np.array(roc["fpr"]), np.array(roc["tpr"]))
+                )
 
-            color = colors[min(color_idx, colors.shape[0] - 1)]
-            color_idx += 1
+            # Multiclass
+            elif "per_class" in roc:
+                for c in roc["per_class"]:
+                    cls = c["class_label"]
+                    fpr = np.array(c["fpr"])
+                    tpr = np.array(c["tpr"])
+                    per_class_curves.setdefault(cls, []).append((fpr, tpr))
 
-            display_obj = RocCurveDisplay(fpr=grid, tpr=mean_tpr, roc_auc=mean_auc)
-            display_obj.plot(
-                ax=ax,
-                name=legend_label,
-                color=color,
-                linewidth=2,
-                plot_chance_level=False,
-            )
+        # ---- Plot averaged ROC curves ----
+        for cls, curves in per_class_curves.items():
+            tpr_interp = []
+            for fpr, tpr in curves:
+                tpr_interp.append(np.interp(grid, fpr, tpr))
 
-            if std_tpr is not None:
-                lower = np.clip(mean_tpr - std_tpr, 0.0, 1.0)
-                upper = np.clip(mean_tpr + std_tpr, 0.0, 1.0)
-                ax.fill_between(grid, lower, upper, color=color, alpha=0.2)
+            tpr_interp = np.array(tpr_interp)
+            mean_tpr = tpr_interp.mean(axis=0)
+            std_tpr = tpr_interp.std(axis=0)
+            auc_value = auc(grid, mean_tpr)
 
-    ax.set_xlabel("False Positive Rate")
-    ax.set_ylabel("True Positive Rate")
-    ax.set_title("Cross-Validated ROC Curves (Mean of Outer Folds)")
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.grid(True, linestyle="--", alpha=0.3)
-    ax.legend(loc="lower right")
-    fig.tight_layout()
+            label = f"{model} — {cls} (AUC={auc_value:.3f})"
+            plt.plot(grid, mean_tpr, lw=2, label=label)
+            plt.fill_between(grid, mean_tpr - std_tpr, mean_tpr + std_tpr, alpha=0.15)
 
-    destination = None
-    if output_path is not None:
-        destination = Path(output_path)
-    else:
-        run_dir = None
-        if isinstance(leaderboard, pd.DataFrame):
-            run_dir = leaderboard.attrs.get("run_dir")
-            if run_dir:
-                default_output_dir = Path(run_dir)
-        if default_output_dir is not None:
-            destination = Path(default_output_dir) / "cv_roc_summary.png"
-    if destination is not None:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(destination, dpi=300)
+    plt.plot([0, 1], [0, 1], "--", color="gray")
+    plt.xlabel("FPR")
+    plt.ylabel("TPR")
+    plt.title("ROC Curves — All Models")
+    plt.grid(alpha=0.3)
+    plt.legend()
+    plt.show()
 
-    if show:
-        if display is not None:
-            display(fig)
-        else:
-            plt.show()
-
-    return fig
-
-
-def plot_cv_confusion_matrices(
-    leaderboard: Any,
-    output_path: Path | str | None = None,
-    *,
-    show: bool = True,
-    default_output_dir: Path | None = None,
-    models: Sequence[str] | None = None,
-    normalize: str | None = None,
-) -> Figure:
-    """Plot aggregated confusion matrices (across outer CV folds) for selected models.
-
-    Parameters
-    ----------
-    leaderboard:
-        In-memory leaderboard (DataFrame) or metrics payload. Must contain ``fold_details`` with
-        confusion matrices recorded during training.
-    output_path:
-        Optional destination for the figure. Defaults to ``cv_confusion_matrices.png`` within the run directory.
-    show:
-        Whether to display the figure (default ``True``).
-    default_output_dir:
-        Fallback directory when ``output_path`` is omitted.
-    models:
-        Optional iterable of model names to plot. By default all models present in ``leaderboard`` are used.
-    normalize:
-        Normalization mode passed to the confusion matrices: ``"true"``, ``"pred"``, ``"all"``, or ``None`` (counts).
-    """
-    records = _iter_leaderboard_records(leaderboard)
-    if not records:
-        raise ValueError("Leaderboard is empty; cannot plot confusion matrices.")
-
-    allowed_models = set(models) if models is not None else None
-    norm_mode = normalize.lower() if isinstance(normalize, str) else None
-
-    matrices: List[tuple[str, np.ndarray, List[Any]]] = []
-    for record in records:
-        model_name = record.get("model")
-        if not model_name:
-            continue
-        if allowed_models is not None and model_name not in allowed_models:
-            continue
-        collected = _collect_confusion_matrices(record.get("fold_details"))
-        agg_matrix, labels = _aggregate_confusion_matrix(collected)
-        if agg_matrix is None or labels is None:
-            continue
-        matrices.append((model_name, agg_matrix, labels))
-
-    if not matrices:
-        raise ValueError(
-            "No confusion matrix data found. Ensure the training pipeline captured predictions for each fold."
-        )
-
-    n_models = len(matrices)
-    ncols = min(3, n_models)
-    nrows = math.ceil(n_models / ncols)
-
-    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(6 * ncols, 5 * nrows))
-    if not isinstance(axes, np.ndarray):
-        axes_array = np.array([axes])
-    else:
-        axes_array = axes.flatten()
-
-    for ax in axes_array[n_models:]:
-        ax.remove()
-
-    vmax = None if normalize else max(matrix.max() for _, matrix, _ in matrices)
-
-    for ax, (model_name, matrix, labels) in zip(axes_array, matrices):
-        display_matrix = _normalize_confusion_matrix(matrix, norm_mode)
-    if norm_mode is None:
-        display_matrix_int = display_matrix.round().astype(int)
-        disp = ConfusionMatrixDisplay(
-            confusion_matrix=display_matrix_int,
-            display_labels=labels
-        )
-        disp.plot(ax=ax, colorbar=False, values_format="d")
-
-    else:
-        # Normalized → plot as float
-        disp = ConfusionMatrixDisplay(
-            confusion_matrix=display_matrix,
-            display_labels=labels
-        )
-        disp.plot(ax=ax, colorbar=False, values_format=".2f")
-
-        if vmax is not None:
-            ax.images[-1].set_clim(0, vmax)
-        mode_suffix = f" (normalized: {norm_mode})" if norm_mode else ""
-        ax.set_title(f"{model_name}{mode_suffix}")
-
-    fig.tight_layout()
-
-    destination = None
-    if output_path is not None:
-        destination = Path(output_path)
-    else:
-        run_dir = None
-        if isinstance(leaderboard, pd.DataFrame):
-            run_dir = leaderboard.attrs.get("run_dir")
-            if run_dir:
-                default_output_dir = Path(run_dir)
-        if default_output_dir is not None:
-            destination = Path(default_output_dir) / "cv_confusion_matrices.png"
-    if destination is not None:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(destination, dpi=300)
-
-    if show:
-        if display is not None:
-            plt.show()
-        else:
-            display(fig)
-
-    return fig
-
-
-def plot_cv_roc_curves_from_metrics(
-    metrics_path: Path | str,
-    output_path: Path | str | None = None,
-    *,
-    show: bool = True,
-    fpr_grid: np.ndarray | None = None,
-    models: Sequence[str] | None = None,
-) -> Figure:
-    """Convenience wrapper that loads ``metrics.json`` and plots CV ROC curves.
-
-    Parameters mirror :func:`plot_cv_roc_curves`; the ``models`` argument lets you focus
-    on a subset of estimators when the run logged multiple candidates.
-    """
-    metrics_file = Path(metrics_path)
-    payload = json.loads(metrics_file.read_text(encoding="utf-8"))
-    records = payload.get("all_models", [])
-    if not records:
-        raise ValueError("metrics.json does not contain any model entries.")
-    default_dir = metrics_file.parent
-    return plot_cv_roc_curves(
-        records,
-        output_path=output_path,
-        show=False,
-        fpr_grid=fpr_grid,
-        default_output_dir=default_dir,
-        models=models,
-    )
-
-
-def plot_cv_confusion_matrices_from_metrics(
-    metrics_path: Path | str,
-    output_path: Path | str | None = None,
-    *,
-    show: bool = True,
-    models: Sequence[str] | None = None,
-    normalize: str | None = None,
-) -> Figure:
-    """Convenience wrapper that loads ``metrics.json`` and plots confusion matrices."""
-    metrics_file = Path(metrics_path)
-    payload = json.loads(metrics_file.read_text(encoding="utf-8"))
-    records = payload.get("all_models", [])
-    if not records:
-        raise ValueError("metrics.json does not contain any model entries.")
-    default_dir = metrics_file.parent
-    return plot_cv_confusion_matrices(
-        records,
-        output_path=output_path,
-        show=False,
-        default_output_dir=default_dir,
-        models=models,
-        normalize=normalize,
-    )
-
-
-
-########################### ---------------------------###############################
 
 def plot_confusion_from_leaderboard(leaderboard, model, normalize=None):
     folds = leaderboard.loc[leaderboard.model == model, "fold_details"].iloc[0]
@@ -511,39 +141,6 @@ def plot_confusion_from_leaderboard(leaderboard, model, normalize=None):
     plt.title(f"Confusion Matrix (outer CV) — {model}")
     plt.show()
 
-
-def plot_roc_from_leaderboard(leaderboard, model):
-    folds = leaderboard.loc[leaderboard.model == model, "fold_details"].iloc[0]
-
-    # collect fpr/tpr pairs
-    fprs = []
-    tprs = []
-    for fold in folds:
-        roc = fold.get("roc_curve")
-        if roc is None:
-            continue
-        fprs.append(np.asarray(roc["fpr"]))
-        tprs.append(np.asarray(roc["tpr"]))
-
-    # interpolation grid
-    grid = np.linspace(0, 1, 200)
-    tprs_interp = [np.interp(grid, f, t) for f, t in zip(fprs, tprs)]
-    mean_tpr = np.mean(tprs_interp, axis=0)
-    std_tpr = np.std(tprs_interp, axis=0)
-    auc_value = auc(grid, mean_tpr)
-
-    # plot
-    plt.plot(grid, mean_tpr, label=f"{model} (AUC={auc_value:.3f})")
-    plt.fill_between(grid, mean_tpr - std_tpr, mean_tpr + std_tpr, alpha=0.2)
-    plt.plot([0, 1], [0, 1], "--", color="grey")
-    plt.xlabel("FPR")
-    plt.ylabel("TPR")
-    plt.title(f"Mean ROC Curve — {model}")
-    plt.legend()
-    plt.grid(alpha=0.3)
-    plt.show()
-
-########################### ---------------------------###############################
 
 def butterfly_plot(df, var1, var2, var3, error1, error2, savepdf=True, group = 'model'):
     fig = make_subplots(rows=1, cols=2, specs=[[{}, {}]], shared_xaxes=False, shared_yaxes=True, horizontal_spacing=0)
