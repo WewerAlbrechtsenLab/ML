@@ -75,3 +75,46 @@ def evaluate_model_on_dataset(
     metrics["y_pred"] = y_pred
 
     return metrics
+
+def evaluate_finished_models_on_external(final_models, X_ext, y_ext=None):
+    """
+    final_models: dict like {model_name: (final_model, feature_mask)}
+    X_ext: full external dataset dataframe
+    y_ext: external labels (optional)
+    """
+    results = {}
+
+    for model_name, (model, mask) in final_models.items():
+        print(f"\nEvaluating model: {model_name}")
+
+        # Apply mask
+        try:
+            X_sel = X_ext.loc[:, mask]
+        except Exception as e:
+            print(f"[SKIP] Feature mismatch for {model_name}: {e}")
+            continue
+
+        # Predict
+        y_pred = model.predict(X_sel)
+        res = {"y_pred": y_pred}
+
+        if y_ext is not None:
+            from sklearn.metrics import (
+                f1_score, 
+                matthews_corrcoef, 
+                roc_auc_score
+            )
+
+            res["f1_weighted"] = f1_score(y_ext, y_pred, average="weighted")
+            res["mcc"] = matthews_corrcoef(y_ext, y_pred)
+
+            if hasattr(model, "predict_proba"):
+                try:
+                    y_proba = model.predict_proba(X_sel)[:, 1]
+                    res["roc_auc"] = roc_auc_score(y_ext, y_proba)
+                except:
+                    res["roc_auc"] = None
+
+        results[model_name] = res
+
+    return results
