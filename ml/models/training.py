@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
-
+import joblib
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -274,6 +274,22 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
             final_model = clone(tuned_full).fit(X.loc[:, full_mask], y)
             final_model.label_encoder_ = le
             final_models[model_name] = (final_model, full_mask)
+
+            # Build the package to save
+            package = {
+                "model": final_model,
+                "mask": full_mask,
+                "feature_names": selected_full,
+                "label_encoder": le,
+                "best_params": final_params
+            }
+            final_models[model_name] = package
+
+            # Save to disk (ONE file per model)
+            model_dir = Path(config.output_dir) / "saved_models"
+            model_dir.mkdir(parents=True, exist_ok=True)
+            joblib.dump(package, model_dir / f"{model_name}.joblib")
+            print(f"[SAVED] Final model saved to: {model_dir / f'{model_name}.joblib'}")
 
             summary = {
                 "model": model_name,
