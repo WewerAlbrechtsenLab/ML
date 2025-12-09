@@ -15,7 +15,6 @@ from sklearn.feature_selection import RFECV
 
 from ml.models.metrics import scoring_map
 from ml.utils.config import PipelineConfig
-from ml.utils.run_logger import log_training_run
 from ml.features.preprocess import build_fold_preprocessor
 
 
@@ -121,25 +120,33 @@ def compute_roc(estimator, X, y, classes, task_type):
 # RFECV (ONE-TIME) using tuned estimator
 # -----------------------------------------------------------
 
-def run_rfecv_once(X, y, tuned_estimator, scoring, inner_cv, batches=None):
-    pre = None                                                                      ## Edit if preprocessor is needed
-    # pre = build_fold_preprocessor(batch_labels=batches)
+# -----------------------------------------------------------
+# RFECV (ONE-TIME) using tuned estimator
+# -----------------------------------------------------------
 
+def run_rfecv_once(X, y, tuned_estimator, scoring, inner_cv, batches=None):
+    pre = None  # Edit if preprocessor is needed
     if pre is not None:
         X_local = clone(pre).fit_transform(X, y, batch_labels=batches)
     else:
         X_local = X
 
-    rfecv = RFECV(
-        estimator=clone(tuned_estimator),
-        cv=inner_cv,
-        scoring=scoring,
-        step=1,
-        min_features_to_select=1,
-    )
-    rfecv.fit(X_local, y)
+    # Check if estimator has 'coef_' or 'feature_importances_'
+    if hasattr(tuned_estimator, 'coef_') or hasattr(tuned_estimator, 'feature_importances_'):
+        rfecv = RFECV(
+            estimator=clone(tuned_estimator),
+            cv=inner_cv,
+            scoring=scoring,
+            step=1,
+            min_features_to_select=1,
+        )
+        rfecv.fit(X_local, y)
+        return np.asarray(rfecv.support_, dtype=bool)
+    else:
+        # If estimator doesn't support feature importance, skip RFECV
+        print(f"[RFECV] Skipped feature selection for {type(tuned_estimator).__name__}")
+        return np.ones(X.shape[1], dtype=bool)  # Return all features as selected
 
-    return np.asarray(rfecv.support_, dtype=bool)
 
 
 # -----------------------------------------------------------
@@ -181,6 +188,8 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
     outer_cv = StratifiedKFold(config.outer_splits, shuffle=True, random_state=config.random_state)
     inner_cv = StratifiedKFold(config.inner_splits, shuffle=True, random_state=config.random_state)
 
+    feature_selection = getattr(config, "feature_selection", "none")
+
     results = []
     fold_history = {}
     final_models = {}
@@ -214,8 +223,7 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                     tuned_estimator,
                     scoring[primary_metric],
                     inner_cv,
-                    batches=None,
-                )
+                    batches=None,)       
 
                 selected = X.columns[mask].tolist()
                 print(f"[RFECV] Selected {mask.sum()} features")

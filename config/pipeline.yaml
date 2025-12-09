@@ -3,7 +3,7 @@ target_cols:
   - 
 task_type: binary
 feature_cols: null
-outer_splits: 5
+outer_splits: 2
 inner_splits: 2
 random_state: 42
 holdout_fraction: null 
@@ -19,6 +19,20 @@ model_registry:
     classname: sklearn.tree.DecisionTreeClassifier
     params:
       random_state: 42
+  # Distance-based Models
+  knn:
+    classname: sklearn.neighbors.KNeighborsClassifier
+    params:
+      n_jobs: -1
+  # Neural Networks
+  mlp:
+    classname: sklearn.neural_network.MLPClassifier
+    params:
+      max_iter: 5000
+      random_state: 42
+      early_stopping: True
+      validation_fraction: 0.25
+
 search_spaces:
   logistic_regression:
     C: [0.1, 0.5, 1.0]
@@ -29,4 +43,15 @@ search_spaces:
     splitter: [best, random]
     min_samples_leaf: [1, 5, 10]
     class_weight: [null, balanced]
+  # Distance-based
+  knn:
+    n_neighbors: scipy.stats.randint(1, 11)
+    weights: [distance]
+    metric: [euclidean, manhattan, minkowski]
+  # Neural Networks
+  mlp:
+    hidden_layer_sizes: scipy.stats.randint(1, 10) 
+    activation: [relu, tanh, identity, logistic] 
+    solver: [adam, sgd]
+    batch_size: [10, 20, 50]
 output_dir: ../outputs
