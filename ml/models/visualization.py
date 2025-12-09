@@ -98,8 +98,16 @@ def plot_all_roc_from_leaderboard(leaderboard):
             mean_tpr = tpr_interp.mean(axis=0)
             std_tpr = tpr_interp.std(axis=0)
             auc_value = auc(grid, mean_tpr)
+            
+            per_fold_auc = [fold["test_roc_auc"] for fold in folds if fold.get("roc_curve") is not None and fold.get("test_roc_auc") is not None
+    ]
+            mean_test_auc = np.mean(per_fold_auc) if per_fold_auc else float("nan")
+            std_test_auc = np.std(per_fold_auc) if per_fold_auc else float("nan")
 
-            label = f"{model} — {cls} (AUC={auc_value:.3f})"
+            label = (
+                f"{model} — {cls} "
+                f"(avg ROC AUC={auc_value:.3f}, test AUC={mean_test_auc:.3f}±{std_test_auc:.3f})"
+            )
             plt.plot(grid, mean_tpr, lw=2, label=label)
             plt.fill_between(grid, mean_tpr - std_tpr, mean_tpr + std_tpr, alpha=0.15)
 
