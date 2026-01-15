@@ -35,16 +35,32 @@ def safe_decode_fold_details(x):
         print("FAILED TO DECODE ENTRY:", x[:200], "...")
         return []
 
-
-def plot_all_roc_from_leaderboard(leaderboard):
+def plot_roc_from_leaderboard(
+    leaderboard,
+    models="all",                 # "all" | str | list[str]
+    title=None,                   # optional custom title
+    figsize=(8, 7),
+    n_grid=300,
+    legend=True,
+):
     """
-    Plots mean ROC curves for all models.
-    Supports binary + multiclass ROC.
-    Automatically decodes fold_details from CSV.
+    Plot mean ROC curves from a leaderboard with per-fold stored roc_curve info.
+
+    Parameters
+    ----------
+    leaderboard : pd.DataFrame
+        Must contain columns: ["model", "fold_details"].
+        fold_details can be a python object or a string representation of it.
+    models : "all" | str | list[str]
+        - "all": plot every model in leaderboard
+        - str: plot only that model name
+        - list[str]: plot only those model names
+    title : str | None
+        Plot title. Defaults to "ROC Curves — <models...>".
     """
 
     # ---- 1) Decode fold_details safely ----
-    leaderboard = leaderboard.copy()
+    lb = leaderboard.copy()
 
     def safe_decode(x):
         if isinstance(x, (dict, list)):
@@ -54,55 +70,81 @@ def plot_all_roc_from_leaderboard(leaderboard):
         except Exception:
             print("Failed to decode fold_details entry:", x)
             return []
-    
-    leaderboard["fold_details"] = leaderboard["fold_details"].apply(safe_decode)
 
-    # ---- 2) Prepare plot ----
-    plt.figure(figsize=(8, 7))
-    grid = np.linspace(0, 1, 300)
+    lb["fold_details"] = lb["fold_details"].apply(safe_decode)
 
-    # ---- 3) Iterate models ----
-    for _, row in leaderboard.iterrows():
+    # ---- 2) Filter models ----
+    if models != "all":
+        if isinstance(models, str):
+            selected = {models}
+        else:
+            selected = set(models)
+        lb = lb[lb["model"].isin(selected)].copy()
+
+    if lb.empty:
+        available = sorted(set(leaderboard["model"].astype(str)))
+        raise ValueError(
+            f"No rows left after filtering. Requested={models}. "
+            f"Available models={available}"
+        )
+
+    # ---- 3) Prepare plot ----
+    plt.figure(figsize=figsize)
+    grid = np.linspace(0, 1, n_grid)
+
+    # ---- 4) Iterate models ----
+    for _, row in lb.iterrows():
         model = row["model"]
-        folds = row["fold_details"]
+        folds = row["fold_details"] or []
 
         per_class_curves = {}
 
         # ---- Collect ROC curves ----
         for fold in folds:
-            roc = fold.get("roc_curve")
-            if roc is None:
+            roc = (fold or {}).get("roc_curve")
+            if not roc:
                 continue
 
             # Binary case
-            if "fpr" in roc:
+            if "fpr" in roc and "tpr" in roc:
                 per_class_curves.setdefault("binary", []).append(
                     (np.array(roc["fpr"]), np.array(roc["tpr"]))
                 )
 
-            # Multiclass
+            # Multiclass case
             elif "per_class" in roc:
                 for c in roc["per_class"]:
-                    cls = c["class_label"]
-                    fpr = np.array(c["fpr"])
-                    tpr = np.array(c["tpr"])
-                    per_class_curves.setdefault(cls, []).append((fpr, tpr))
+                    cls = c.get("class_label", "unknown")
+                    fpr = np.array(c.get("fpr", []))
+                    tpr = np.array(c.get("tpr", []))
+                    if fpr.size and tpr.size:
+                        per_class_curves.setdefault(cls, []).append((fpr, tpr))
+
+        if not per_class_curves:
+            continue
 
         # ---- Plot averaged ROC curves ----
         for cls, curves in per_class_curves.items():
             tpr_interp = []
             for fpr, tpr in curves:
-                tpr_interp.append(np.interp(grid, fpr, tpr))
+                order = np.argsort(fpr)
+                fpr_sorted = fpr[order]
+                tpr_sorted = tpr[order]
+                tpr_interp.append(np.interp(grid, fpr_sorted, tpr_sorted))
 
-            tpr_interp = np.array(tpr_interp)
+            tpr_interp = np.asarray(tpr_interp)
             mean_tpr = tpr_interp.mean(axis=0)
             std_tpr = tpr_interp.std(axis=0)
+
             auc_value = auc(grid, mean_tpr)
-            
-            per_fold_auc = [fold["test_roc_auc"] for fold in folds if fold.get("roc_curve") is not None and fold.get("test_roc_auc") is not None
-    ]
-            mean_test_auc = np.mean(per_fold_auc) if per_fold_auc else float("nan")
-            std_test_auc = np.std(per_fold_auc) if per_fold_auc else float("nan")
+
+            per_fold_auc = [
+                fold.get("test_roc_auc")
+                for fold in folds
+                if fold and fold.get("roc_curve") is not None and fold.get("test_roc_auc") is not None
+            ]
+            mean_test_auc = float(np.mean(per_fold_auc)) if per_fold_auc else float("nan")
+            std_test_auc = float(np.std(per_fold_auc)) if per_fold_auc else float("nan")
 
             label = (
                 f"{model} — {cls} "
@@ -111,12 +153,21 @@ def plot_all_roc_from_leaderboard(leaderboard):
             plt.plot(grid, mean_tpr, lw=2, label=label)
             plt.fill_between(grid, mean_tpr - std_tpr, mean_tpr + std_tpr, alpha=0.15)
 
+    # ---- 5) Cosmetics ----
     plt.plot([0, 1], [0, 1], "--", color="gray")
     plt.xlabel("FPR")
     plt.ylabel("TPR")
-    plt.title("ROC Curves — All Models")
+
+    if title is None:
+        if models == "all":
+            title = "ROC Curves — All Models"
+        else:
+            title = "ROC Curves — Selected Models"
+    plt.title(title)
+
     plt.grid(alpha=0.3)
-    plt.legend()
+    if legend:
+        plt.legend()
     plt.show()
 
 
