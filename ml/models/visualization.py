@@ -67,10 +67,10 @@ def plot_confusion_from_leaderboard(leaderboard, model, normalize=None):
 
 def butterfly_plot(df, var1, var2, var3, error1, error2, savepdf=True, group = 'model'):
     fig = make_subplots(rows=1, cols=2, specs=[[{}, {}]], shared_xaxes=False, shared_yaxes=True, horizontal_spacing=0)
-    fig.append_trace(go.Bar(x = df[var1], y = df[group], text = df[var1], error_x=dict(type='data', array=df[error1]), error_y=dict(type='data', array=df[error1]),
+    fig.append_trace(go.Bar(x = df[var1], y = df[group], text = df[var1].round(4), error_x=dict(type='data', array=df[error1], arrayminus=np.zeros(len(df))), error_y=dict(type='data', array=df[error1]),
                         textposition='inside', orientation='h', width=0.7, 
                         showlegend=False, marker_color='#4472c4'), 1, 1) # 1,1 represents row 1 column 1
-    fig.append_trace(go.Bar(x = df[var2], y = df[group], text = df[var2], error_x=dict(type='data', array=df[error2]), error_y=dict(type='data', array=df[error2]),
+    fig.append_trace(go.Bar(x = df[var2], y = df[group], text = df[var2].round(4), error_x=dict(type='data', array=df[error2], arrayminus=np.zeros(len(df))), error_y=dict(type='data', array=df[error2]),
                  textposition='inside', orientation='h', width=0.7, 
                  showlegend=False, marker_color='#ed7d31'), 1, 2) # 1,2 represents row 1 column 2
     fig.update_xaxes(title_text="Matthews Correlation Coefficient", row=1, col=1, range=[1,0])
