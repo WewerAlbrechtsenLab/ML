@@ -60,7 +60,9 @@ def plot_confusion_from_leaderboard(leaderboard, model, normalize=None):
     disp = ConfusionMatrixDisplay(confusion_matrix=agg)
     disp.plot(values_format=fmt, cmap="Blues")
     plt.title(f"Confusion Matrix (outer CV) — {model}")
-    plt.show()
+    fig = plt.gcf()
+
+    return fig
 
 
 def butterfly_plot(df, var1, var2, var3, error1, error2, savepdf=True, group = 'model'):
@@ -77,7 +79,7 @@ def butterfly_plot(df, var1, var2, var3, error1, error2, savepdf=True, group = '
     fig.update_layout(template='plotly_white')
     if savepdf:
         fig.write_image('figures/3b.png')
-    fig.show()
+    return fig
 
 def plot_roc_curves(
     leaderboard,
@@ -207,4 +209,7 @@ def plot_roc_curves(
     plt.ylabel("True Positive Rate")
     plt.grid(alpha=0.3)
     plt.legend()
-    plt.show()
+    fig = plt.gcf()
+
+    return fig
+
