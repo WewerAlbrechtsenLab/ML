@@ -125,14 +125,13 @@ def compute_roc(estimator, X, y, classes, task_type):
 # -----------------------------------------------------------
 
 def run_rfecv_once(X, y, tuned_estimator, scoring, inner_cv, batches=None):
-    pre = None  # Edit if preprocessor is needed
+    pre = None
     if pre is not None:
         X_local = clone(pre).fit_transform(X, y, batch_labels=batches)
     else:
         X_local = X
-
-    # Check if estimator has 'coef_' or 'feature_importances_'
-    if hasattr(tuned_estimator, 'coef_') or hasattr(tuned_estimator, 'feature_importances_'):
+    try:
+    #if hasattr(tuned_estimator, "coef_") or hasattr(tuned_estimator, "feature_importances_"):
         rfecv = RFECV(
             estimator=clone(tuned_estimator),
             cv=inner_cv,
@@ -141,11 +140,13 @@ def run_rfecv_once(X, y, tuned_estimator, scoring, inner_cv, batches=None):
             min_features_to_select=1,
         )
         rfecv.fit(X_local, y)
-        return np.asarray(rfecv.support_, dtype=bool)
-    else:
-        # If estimator doesn't support feature importance, skip RFECV
-        print(f"[RFECV] Skipped feature selection for {type(tuned_estimator).__name__}")
-        return np.ones(X.shape[1], dtype=bool)  # Return all features as selected
+        mask = np.asarray(rfecv.support_, dtype=bool)
+        return mask, rfecv
+
+    except Exception as e:
+        print(f"[RFECV] Skipped for {type(tuned_estimator).__name__}: {type(e).__name__}: {e}")
+        mask = np.ones(X.shape[1], dtype=bool)
+        return mask, None
 
 
 
@@ -194,6 +195,9 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
     fold_history = {}
     final_models = {}
 
+    figures_dir = Path(config.output_dir) / "figures"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+
     for model_name, base_estimator in models.items():
         print(f"\n===== MODEL: {model_name} =====")
         fold_history[model_name] = []
@@ -218,32 +222,42 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                 )
                 print(f"[HP-SEARCH] Best params: {best_params}")
 
-                mask = run_rfecv_once(
-                    Xtr, ytr,
-                    tuned_estimator,
-                    scoring[primary_metric],
-                    inner_cv,
-                    batches=None,)       
+                if feature_selection != "none":
+                    mask, selector= run_rfecv_once(
+                        Xtr, ytr,
+                        tuned_estimator,
+                        scoring[primary_metric],
+                        inner_cv,
+                        batches=None
+                    )
+   
+                    selected = X.columns[mask].tolist()
+                    selected_count = int(mask.sum())
+                    print(f"[RFECV] Selected {selected_count} features")
 
-                selected = X.columns[mask].tolist()
-                print(f"[RFECV] Selected {mask.sum()} features")
+                    Xtr = Xtr.loc[:, mask]
+                    Xte = Xte.loc[:, mask]
+                else:
+                    selected = list(X.columns)
+                    mask = np.ones(X.shape[1], dtype=bool)
+                    selector = None
+                    selected = list(X.columns)
+                    selected_count = len(selected)
+                    print(f"[NO RFECV] Using all {selected_count} features")
 
-                Xtr_sel = Xtr.loc[:, mask]
-                Xte_sel = Xte.loc[:, mask]
-
-                tuned_estimator = clone(tuned_estimator).fit(Xtr_sel, ytr)
-                y_pred = tuned_estimator.predict(Xte_sel)
+                tuned_estimator = clone(tuned_estimator).fit(Xtr, ytr)
+                y_pred = tuned_estimator.predict(Xte)
 
                 fold = dict(
                     outer_fold=fold_idx,
                     best_params=best_params,
                     selected_features=selected,
-                    selected_feature_count=int(mask.sum()),
+                    selected_feature_count=int(mask.sum()) if feature_selection != "none" else len(selected),
                     confusion_matrix=confusion_matrix(yte, y_pred).tolist(),
                 )
 
                 classes = tuned_estimator.classes_
-                roc_payload = compute_roc(tuned_estimator, Xte_sel, yte,
+                roc_payload = compute_roc(tuned_estimator, Xte, yte,
                                           classes, config.task_type)
                 if roc_payload:
                     fold["roc_curve"] = roc_payload
@@ -268,16 +282,57 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
             )
             print(f"[FINAL] Best params: {final_params}")
 
-            full_mask = run_rfecv_once(
-                X, y,
-                tuned_full,
-                scoring[primary_metric],
-                inner_cv,
-                batches=None,
-            )
+            if feature_selection != "none":
+                full_mask , full_selector  = run_rfecv_once(
+                    X, y,
+                    tuned_full,
+                    scoring[primary_metric],
+                    inner_cv,
+                    batches=None,
+                )
+                selected_full = X.columns[full_mask].tolist()
+                print(f"[FINAL RFECV] Selected {full_mask.sum()} features")
+            else:
+                selected_full = list(X.columns)
+                full_mask = np.ones(X.shape[1], dtype=bool)
+                print(f"[NO RFECV] Using all {len(selected_full)} features")
 
-            selected_full = X.columns[full_mask].tolist()
-            print(f"[FINAL RFECV] Selected {full_mask.sum()} features")
+            # Plot RFECV results (if feature selection was performed)
+            #supports_rfecv = hasattr(tuned_full, "coef_") or hasattr(tuned_full, "feature_importances_")
+
+            if feature_selection != "none" and full_selector is not None:
+                import plotly.graph_objects as go
+
+                features = full_selector.n_features_
+
+                error_max = full_selector.cv_results_['mean_test_score'] + full_selector.cv_results_['std_test_score']
+                error_min = full_selector.cv_results_['mean_test_score'] - full_selector.cv_results_['std_test_score']
+
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=np.concatenate([list(range(1, len(X.columns) + 1)), list(range(1, len(X.columns) + 1))[::-1]]),
+                    y=np.concatenate([error_max, error_min[::-1]]),
+                    fill='toself', opacity=0.5, name='1 std.'))
+                fig.add_trace(go.Scatter(x=list(range(1, len(X.columns) + 1)), y=full_selector.cv_results_['mean_test_score'],
+                                        name='Mean test score', line=dict(color='firebrick', width=1)))
+                fig.add_trace(go.Scatter(x=[features, features], name='Optimal number of features: {}'.format(features),
+                                        y=[0, 1],
+                                        mode='lines',
+                                        line=dict(color='green', width=2, dash='dash')))
+
+                fig.update_layout(template='simple_white',
+                                  autosize=False,
+                                  width=800,
+                                  height=500,
+                                  title="RFECV for classifier",
+                                  xaxis_title="Number of features selected",
+                                  yaxis_title="F1-weighted",
+                                  legend_title="",
+                                  legend_traceorder="reversed",
+                                  xaxis_range=[0, len(X.columns) + 1],
+                                  yaxis_range=[0, max(error_max)])
+                
+                fig.write_image(figures_dir / f"{model_name}_RFECV.svg")
 
             final_model = clone(tuned_full).fit(X.loc[:, full_mask], y)
             final_model.label_encoder_ = le
@@ -303,13 +358,13 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                 "model": model_name,
                 "primary_metric": primary_metric,
                 "best_params_full_fit": final_params,
-                "selected_feature_count": int(full_mask.sum()),
+                "selected_feature_count": int(full_mask.sum()) if feature_selection != "none" else len(selected_full),
                 "selected_features": selected_full,
             }
 
             for m, values in fold_scores.items():
                 summary[f"mean_{m}"] = float(np.mean(values))
-                summary[f"std_{m}"] = float(np.std(values)) if len(values)>1 else 0.0
+                summary[f"std_{m}"] = float(np.std(values)) if len(values) > 1 else 0.0
 
             results.append(summary)
 
@@ -341,3 +396,4 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
     )
 
     return pd.DataFrame(results), final_models
+
