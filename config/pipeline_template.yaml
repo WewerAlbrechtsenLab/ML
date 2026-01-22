@@ -7,6 +7,7 @@ outer_splits: 3 #choose your number of folds
 inner_splits: 2
 random_state: 42
 feature_selection: rfecv # or none
+feature_score_tolerance: 0.001  #choose the metric tolerance when selecting features
 model_registry:
   # Bayesian / Gaussian
   gaussian_nb:

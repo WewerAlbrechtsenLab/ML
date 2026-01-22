@@ -22,6 +22,7 @@ class PipelineConfig:
     random_state: int
     feature_selection: Literal["none", "univariate", "rfe", "rfecv"]
     output_dir: str
+    feature_score_tolerance: float | None = None
     feature_cols: Optional[List[str]] = None
     holdout_fraction: Optional[float] = None
     holdout_groups: Optional[List[str]] = None

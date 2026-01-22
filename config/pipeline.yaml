@@ -9,6 +9,8 @@ random_state: 42
 holdout_fraction: null 
 holdout_groups: null
 feature_selection: rfecv 
+feature_score_tolerance: 0.001
+
 model_registry:
   logistic_regression:
     classname: sklearn.linear_model.LogisticRegression
