@@ -117,11 +117,7 @@ def compute_roc(estimator, X, y, classes, task_type):
 
 
 # -----------------------------------------------------------
-# RFECV (ONE-TIME) using tuned estimator
-# -----------------------------------------------------------
-
-# -----------------------------------------------------------
-# RFECV (ONE-TIME) using tuned estimator
+# RFECV 
 # -----------------------------------------------------------
 
 def run_rfecv_once(X, y, tuned_estimator, scoring, inner_cv, batches=None):
@@ -148,6 +144,36 @@ def run_rfecv_once(X, y, tuned_estimator, scoring, inner_cv, batches=None):
         mask = np.ones(X.shape[1], dtype=bool)
         return mask, None
 
+def select_mask_within_tolerance(rfecv: RFECV, tolerance: float):
+    """
+    Pick the SMALLEST feature set whose score is within tolerance of the best.
+    """
+    scores = rfecv.cv_results_["mean_test_score"]
+    stds = rfecv.cv_results_.get("std_test_score", None)
+
+    n_features = rfecv.cv_results_["n_features"]
+
+    best_score = np.max(scores)
+    threshold = best_score - tolerance
+
+    # Eligible indices
+    eligible = np.where(scores >= threshold)[0]
+
+    # Choose smallest number of features
+    best_idx = eligible[np.argmin(n_features[eligible])]
+
+    # Build mask manually
+    support = rfecv.support_.copy()
+
+    # Re-run RFECV internals to get exact mask for that feature count
+    rfecv.n_features_to_select_ = n_features[best_idx]
+    support = rfecv._get_support_mask()
+
+    return support, {
+        "best_score": float(best_score),
+        "chosen_score": float(scores[best_idx]),
+        "chosen_features": int(n_features[best_idx]),
+    }
 
 
 # -----------------------------------------------------------
@@ -280,7 +306,7 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                 inner_cv,
                 model_name,
             )
-            print(f"[FINAL] Best params: {final_params}")
+            print(f"\n---[FINAL] Best params: {final_params} ---")
 
             if feature_selection != "none":
                 full_mask , full_selector  = run_rfecv_once(
@@ -290,8 +316,19 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                     inner_cv,
                     batches=None,
                 )
-                selected_full = X.columns[full_mask].tolist()
-                print(f"[FINAL RFECV] Selected {full_mask.sum()} features")
+
+                if config.feature_score_tolerance is not None and full_selector is not None:
+                    full_mask, tol_info = select_mask_within_tolerance(
+                        full_selector,
+                        config.feature_score_tolerance
+                    )
+                    selected_full = X.columns[full_mask].tolist()
+                    print(
+                        f"[RFECV-TOL] Best={tol_info['best_score']:.4f} | "
+                        f"Chosen={tol_info['chosen_score']:.4f} | "
+                        f"FINAL RFECV={tol_info['chosen_features']}"
+                    )
+
             else:
                 selected_full = list(X.columns)
                 full_mask = np.ones(X.shape[1], dtype=bool)
@@ -303,36 +340,144 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
             if feature_selection != "none" and full_selector is not None:
                 import plotly.graph_objects as go
 
-                features = full_selector.n_features_
+                scores = full_selector.cv_results_["mean_test_score"]
+                stds = full_selector.cv_results_["std_test_score"]
+                n_features = full_selector.cv_results_["n_features"]
+                total_features = X.shape[1]
 
-                error_max = full_selector.cv_results_['mean_test_score'] + full_selector.cv_results_['std_test_score']
-                error_min = full_selector.cv_results_['mean_test_score'] - full_selector.cv_results_['std_test_score']
+                best_idx = int(np.argmax(scores))
+                best_score = scores[best_idx]
+                best_nfeat = n_features[best_idx]
+
+                # Tolerance-selected index (if enabled)
+                tol_idx = None
+                if config.feature_score_tolerance is not None:
+                    threshold = best_score - config.feature_score_tolerance
+                    eligible = np.where(scores >= threshold)[0]
+                    tol_idx = eligible[np.argmin(n_features[eligible])]
+                    tol_score = scores[tol_idx]
+                    tol_nfeat = n_features[tol_idx]
+                    same_point = (tol_idx is not None and tol_idx == best_idx)
+
+                error_max = scores + stds
+                error_min = scores - stds
 
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=np.concatenate([list(range(1, len(X.columns) + 1)), list(range(1, len(X.columns) + 1))[::-1]]),
-                    y=np.concatenate([error_max, error_min[::-1]]),
-                    fill='toself', opacity=0.5, name='1 std.'))
-                fig.add_trace(go.Scatter(x=list(range(1, len(X.columns) + 1)), y=full_selector.cv_results_['mean_test_score'],
-                                        name='Mean test score', line=dict(color='firebrick', width=1)))
-                fig.add_trace(go.Scatter(x=[features, features], name='Optimal number of features: {}'.format(features),
-                                        y=[0, 1],
-                                        mode='lines',
-                                        line=dict(color='green', width=2, dash='dash')))
 
-                fig.update_layout(template='simple_white',
-                                  autosize=False,
-                                  width=800,
-                                  height=500,
-                                  title="RFECV for classifier",
-                                  xaxis_title="Number of features selected",
-                                  yaxis_title="F1-weighted",
-                                  legend_title="",
-                                  legend_traceorder="reversed",
-                                  xaxis_range=[0, len(X.columns) + 1],
-                                  yaxis_range=[0, max(error_max)])
-                
+                # --- 1 std band ---
+                fig.add_trace(go.Scatter(
+                    x=np.concatenate([n_features, n_features[::-1]]),
+                    y=np.concatenate([error_max, error_min[::-1]]),
+                    fill='toself',
+                    opacity=0.9,
+                    name='±1 std',
+                    line=dict(color='lightgray')
+                ))
+
+                # --- Mean score curve ---
+                fig.add_trace(go.Scatter(
+                    x=n_features,
+                    y=scores,
+                    mode='lines+markers',
+                    name='Mean CV score',
+                    line=dict(color='firebrick', width=2)
+                ))
+
+                # --- Best point ---
+                if same_point:
+                    fig.add_trace(go.Scatter(
+                        x=[best_nfeat],
+                        y=[best_score],
+                        mode='markers+text',
+                        marker=dict(color='purple', size=11, symbol='diamond'),
+                        text=[f"score={best_score:.4f}"],
+                        textposition="top center",
+                        name="Best (selected)"
+                    ))
+
+                else:
+                    # --- Best point ---
+                    fig.add_trace(go.Scatter(
+                        x=[best_nfeat],
+                        y=[best_score],
+                        mode='markers+text',
+                        marker=dict(color='red', size=10),
+                        text=[f"best<br>score={best_score:.4f}"],
+                        textposition="top center",
+                        name="Best"
+                    ))
+
+                    # --- Chosen (tolerance) point ---
+                    fig.add_trace(go.Scatter(
+                        x=[tol_nfeat],
+                        y=[tol_score],
+                        mode='markers+text',
+                        marker=dict(color='green', size=10),
+                        text=[f"selected<br>score={tol_score:.4f}<br>n={tol_nfeat}"],
+                        textposition="bottom center",
+                        name="Selected (within tolerance)"
+                    ))
+
+                fig.update_layout(
+                    width=1000,height=650,margin=dict(l=90,r=40, t=120,b=80),
+                    yaxis_title = 'F1-score (weighted)',
+                    xaxis=dict(
+                        title="Selected features (out of {} total)".format(total_features),
+                        range=[1, (total_features+1)],
+                        tickmode="array",
+                        tickvals=[1, best_nfeat, tol_nfeat, total_features]
+                        if tol_idx is not None else [1, best_nfeat, total_features],
+                        ticktext=[
+                            "1",
+                            f"{best_nfeat}",
+                            f"{tol_nfeat}",
+                            f"{total_features}"
+                        ] if tol_idx is not None else [
+                            "1",
+                            f"{best_nfeat}",
+                            f"{total_features}"
+                        ],
+                    )
+                )
+                fig.update_yaxes(range=[
+                    min(error_min) - 0.05,
+                    max(error_max) + 0.05
+                ])
+
                 fig.write_image(figures_dir / f"{model_name}_RFECV.svg")
+
+
+
+                # features = full_selector.n_features_
+
+                # error_max = full_selector.cv_results_['mean_test_score'] + full_selector.cv_results_['std_test_score']
+                # error_min = full_selector.cv_results_['mean_test_score'] - full_selector.cv_results_['std_test_score']
+
+                # fig = go.Figure()
+                # fig.add_trace(go.Scatter(
+                #     x=np.concatenate([list(range(1, len(X.columns) + 1)), list(range(1, len(X.columns) + 1))[::-1]]),
+                #     y=np.concatenate([error_max, error_min[::-1]]),
+                #     fill='toself', opacity=0.5, name='1 std.'))
+                # fig.add_trace(go.Scatter(x=list(range(1, len(X.columns) + 1)), y=full_selector.cv_results_['mean_test_score'],
+                #                         name='Mean test score', line=dict(color='firebrick', width=1)))
+                # fig.add_trace(go.Scatter(x=[features, features], name='Optimal number of features: {}'.format(features),
+                #                         y=[0, 1],
+                #                         mode='lines',
+                #                         line=dict(color='green', width=2, dash='dash')))
+
+                # fig.update_layout(template='simple_white',
+                #                   autosize=False,
+                #                   width=800,
+                #                   height=500,
+                #                   title="RFECV for classifier",
+                #                   xaxis_title="Number of features selected",
+                #                   yaxis_title="F1-weighted",
+                #                   legend_title="",
+                #                   legend_traceorder="reversed",
+                #                   xaxis_range=[0, len(X.columns) + 1],
+                #                   yaxis_range=[0, max(error_max)])
+                
+                # fig.write_image(figures_dir / f"{model_name}_RFECV.svg")
 
             final_model = clone(tuned_full).fit(X.loc[:, full_mask], y)
             final_model.label_encoder_ = le
@@ -359,7 +504,6 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                 "primary_metric": primary_metric,
                 "best_params_full_fit": final_params,
                 "selected_feature_count": int(full_mask.sum()) if feature_selection != "none" else len(selected_full),
-                "selected_features": selected_full,
             }
 
             for m, values in fold_scores.items():
