@@ -5,9 +5,8 @@ import joblib
 import numpy as np
 import pandas as pd
 from pathlib import Path
-import pandas as pd
 import json
-from sklearn.base import BaseEstimator, TransformerMixin, clone
+from sklearn.base import clone
 from sklearn.metrics import confusion_matrix, get_scorer, roc_curve
 from sklearn.model_selection import StratifiedKFold, RandomizedSearchCV
 from sklearn.preprocessing import LabelEncoder
@@ -15,7 +14,8 @@ from sklearn.feature_selection import RFECV
 
 from ml.models.metrics import scoring_map
 from ml.utils.config import PipelineConfig
-from ml.features.preprocess import build_fold_preprocessor
+from ml.models.visualization import plot_rfecv_curve
+from MSprocessing.stats.models import run_linear_model
 
 
 # -----------------------------------------------------------
@@ -33,6 +33,26 @@ def _ensure_series(y):
             raise ValueError("Only single target supported.")
         return y.iloc[:, 0]
     return pd.Series(y)
+
+def save_feature_selection_json(feature_selection_dict, output_dir, filename="feature_selection_linear_model.json"):
+    json_ready = {}
+
+    for model, fold_dict in feature_selection_dict.items():
+        json_ready[model] = {}
+        for fold_key, proteins in fold_dict.items():
+            # convert sets → sorted lists (JSON-safe)
+            json_ready[model][fold_key] = sorted(list(proteins))
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    out_path = output_dir / filename
+    with open(out_path, "w") as f:
+        json.dump(json_ready, f, indent=2)
+
+    print(f"[SAVED] Feature selection JSON written to: {out_path}")
+
+    return out_path
 
 def write_leaderboard(results, primary_metric, fold_history, output_dir, prefix):
     """
@@ -175,6 +195,144 @@ def select_mask_within_tolerance(rfecv: RFECV, tolerance: float):
         "chosen_features": int(n_features[best_idx]),
     }
 
+# -----------------------------------------------------------
+# Linear Model based Feature Selection 
+# -----------------------------------------------------------
+
+def run_linear_models(
+    X,
+    y,
+    inner_cv,
+    formula,
+    filter_to,
+    pval_col="padj",           # "pval" or "padj"
+    alpha=0.05,
+    coef_threshold=0.0,        # abs(coef) threshold
+    keep_k=None,               # keep proteins present in >= keep_k inner folds
+    keep_frac=None,            # alternative: keep proteins present in >= keep_frac (0-1)
+    max_features=None,         # optional cap after filtering
+    **linear_kwargs,
+):
+    """
+    Confounder-adjusted feature selection using models.run_linear_model. Counts how often each protein passes filters,
+    then keeps proteins meeting a stability threshold (>=k folds or >=fraction).
+
+    Parameters
+    ----------
+    formula : str
+        Patsy formula, e.g. "y ~ C(test5, Treatment(reference='control')) + sex + age".
+    filter_to : str
+        Term to keep from linear model output (e.g. "test5").
+
+    ----------
+    Returns:
+      mask (np.ndarray bool), selected_features (list), fs_info (dict[str, set[str]])
+    """
+    X = _ensure_frame(X)
+    y = _ensure_series(y)
+
+    # Extract metadata from MultiIndex
+    meta = X.index.to_frame(index=False)
+    proteome = X.copy()
+    proteome.index = meta.index  # align for statsmodels
+
+    fs_info = {}
+    n_folds = 0
+
+    for fold_id, (tr_i, _) in enumerate(inner_cv.split(X, y), start=1):
+        proteome_tr = proteome.iloc[tr_i]
+        meta_tr = meta.iloc[tr_i]
+
+        res = run_linear_model(
+            proteome=proteome_tr,
+            meta=meta_tr,
+            formula=formula,
+            filter_to=filter_to,
+            **linear_kwargs,
+        ).copy()
+
+        # ensure protein index
+        if res.index.name != "protein" and "protein" in res.columns:
+            res = res.set_index("protein")
+
+        passed = (
+            (res[pval_col] <= alpha)
+            & (res["coef"].abs() > coef_threshold)
+        )
+
+        selected = set(res.index[passed])
+        print(
+            f"[Linear-FS][Inner {fold_id}] "
+            f"passed pval+coef: {len(selected)} features"
+        )
+
+        fs_info[f"inner_fold_{fold_id}"] = selected
+        n_folds += 1
+
+    # -------------------------
+    # Selection rule
+    # -------------------------
+    all_selected = list(fs_info.values())
+    counts = {}
+
+    for s in all_selected:
+        for p in s:
+            counts[p] = counts.get(p, 0) + 1
+
+    if keep_k is None and keep_frac is None:
+        keep_k_eff = n_folds           # default = intersection
+    elif keep_frac is not None:
+        keep_k_eff = int(np.ceil(keep_frac * n_folds))
+    else:
+        keep_k_eff = int(keep_k)
+
+    selected_features = [
+        p for p, c in counts.items() if c >= keep_k_eff
+    ]
+
+    print(
+        f"[Linear-FS] After stability rule: "
+        f"{len(selected_features)} features"
+    )
+    # -------------------------
+    # Fallback if empty
+    # -------------------------
+    if len(selected_features) == 0:
+        selected_features = list(X.columns)
+        print(
+        "[Linear-FS][FALLBACK] "
+        "No features met stability rule → using ALL features"
+    )
+
+    # -------------------------
+    # Optional cap by |coef|
+    # -------------------------
+    if max_features is not None and len(selected_features) > max_features:
+        res_full = run_linear_model(
+            proteome=proteome,
+            meta=meta,
+            formula=formula,
+            filter_to=filter_to,
+            **linear_kwargs,
+        ).copy()
+
+        if res_full.index.name != "protein" and "protein" in res_full.columns:
+            res_full = res_full.set_index("protein")
+
+        ranked = (
+            res_full.loc[res_full.index.intersection(selected_features)]
+            .assign(abscoef=lambda d: d["coef"].abs())
+            .sort_values("abscoef", ascending=False)
+        )
+
+        selected_features = ranked.head(max_features).index.tolist()
+        print(
+            f"[Linear-FS] Capped to top {max_features} by |coef|"
+        )
+
+    mask = X.columns.isin(selected_features)
+
+    return mask, selected_features, fs_info
 
 # -----------------------------------------------------------
 # Hyperparameter search
@@ -197,11 +355,11 @@ def run_hp_search(X, y, estimator, config, scoring, primary_metric, inner_cv, mo
 
 
 # -----------------------------------------------------------
-# Main training: HP-first, RFECV-second
+# Main training
 # -----------------------------------------------------------
 
 def nested_cross_validate_models(models, X, y, config: PipelineConfig):
-    print("\n========== NESTED CV: HP-FIRST + RFECV-SECOND ==========")
+    print("\n========== NESTED CV ==========")
 
     X = _ensure_frame(X)
     y = _ensure_series(y)
@@ -220,6 +378,7 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
     results = []
     fold_history = {}
     final_models = {}
+    info = {}
 
     figures_dir = Path(config.output_dir) / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
@@ -227,7 +386,9 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
     for model_name, base_estimator in models.items():
         print(f"\n===== MODEL: {model_name} =====")
         fold_history[model_name] = []
-        fold_scores = {m: [] for m in scoring}
+        fold_scores = {m: [] for m in scoring} 
+        info[model_name] = {}
+
 
         try:
             # -------- OUTER LOOP --------
@@ -248,7 +409,7 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                 )
                 print(f"[HP-SEARCH] Best params: {best_params}")
 
-                if feature_selection != "none":
+                if feature_selection == "rfecv":
                     mask, selector= run_rfecv_once(
                         Xtr, ytr,
                         tuned_estimator,
@@ -263,13 +424,39 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
 
                     Xtr = Xtr.loc[:, mask]
                     Xte = Xte.loc[:, mask]
+
+                elif feature_selection == "linear_model":
+                    mask, selected, fs_info = (
+                        run_linear_models(
+                            Xtr,
+                            ytr,
+                            inner_cv=inner_cv,
+                            formula=config.linear_formula,
+                            filter_to=config.linear_filter_to,
+                            alpha=config.linear_alpha,
+                            pval_col=config.linear_pval_col,
+                            coef_threshold=config.linear_coef_threshold,
+                            keep_k=config.linear_keep_k,
+                            keep_frac=config.linear_keep_frac,
+                            max_features=config.linear_max_features,
+                        )
+                    )
+                    Xtr = Xtr.loc[:, mask]
+                    Xte = Xte.loc[:, mask]
+
+                    # Store proteins selected in each fold
+                    for inner_fold, proteins in fs_info.items():
+                        key = f"outer_{fold_idx+1}/{inner_fold}"
+                        info[model_name][key] = set(proteins)
+                    info[model_name][f"outer_{fold_idx+1}"] = set(selected)
+
                 else:
                     selected = list(X.columns)
                     mask = np.ones(X.shape[1], dtype=bool)
                     selector = None
                     selected = list(X.columns)
                     selected_count = len(selected)
-                    print(f"[NO RFECV] Using all {selected_count} features")
+                    print(f"[NO SELECTION] Using all {selected_count} features")
 
                 tuned_estimator = clone(tuned_estimator).fit(Xtr, ytr)
                 y_pred = tuned_estimator.predict(Xte)
@@ -296,6 +483,7 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
 
                 fold_history[model_name].append(fold)
 
+
             # -------- FINAL MODEL --------
             tuned_full, final_params = run_hp_search(
                 X, y,
@@ -314,7 +502,7 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
             tol_info = None
 
             # ---- RFECV (optional) ----
-            if feature_selection != "none":
+            if feature_selection == "rfecv":
                 full_mask, full_selector = run_rfecv_once(
                     X, y,
                     tuned_full,
@@ -332,131 +520,50 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                     print(
                         f"[RFECV-TOL] Best={tol_info['best_score']:.4f} | "
                         f"Chosen={tol_info['chosen_score']:.4f} | "
-                        f"FINAL RFECV={tol_info['chosen_features']}"
+                        f"\n---[FINAL RFECV] {tol_info['chosen_features']}"
                     )
 
                 selected_full = X.columns[full_mask].tolist()
 
+            elif feature_selection == "linear_model":
+                full_mask, selected_full, fs_info = (
+                    run_linear_models(
+                        X,
+                        y,
+                        inner_cv=inner_cv,
+                        formula=config.linear_formula,
+                        filter_to=config.linear_filter_to,
+                        alpha=config.linear_alpha,
+                        pval_col=config.linear_pval_col,
+                        coef_threshold=config.linear_coef_threshold,
+                        keep_k=config.linear_keep_k,
+                        keep_frac=config.linear_keep_frac,
+                        max_features=config.linear_max_features,
+                    )
+                )
+                for inner_fold, proteins in fs_info.items():
+                    info[model_name][f"final/{inner_fold}"] = set(proteins)
+                info[model_name]["final"] = set(selected_full)
+                print(f'\n---[FINAL Linear Model]  {len(selected_full)} features')
+
             else:
-                print(f"[NO RFECV] Using all {len(selected_full)} features")
+                print(f"\n---[NO SELECTION] Using all {len(selected_full)} features")
 
             # Plot RFECV results (if feature selection was performed)
             #supports_rfecv = hasattr(tuned_full, "coef_") or hasattr(tuned_full, "feature_importances_")
 
-            if feature_selection != "none" and full_selector is not None:
-                try:
-                    import plotly.graph_objects as go
+            if feature_selection == "rfecv" and full_selector is not None:
+                plot_rfecv_curve(
+                    rfecv=full_selector,
+                    total_features=X.shape[1],
+                    model_name=model_name,
+                    output_dir=figures_dir,
+                    tolerance=config.feature_score_tolerance,
+                    metric_name=primary_metric,
+                )
 
-                    scores = full_selector.cv_results_["mean_test_score"]
-                    stds = full_selector.cv_results_["std_test_score"]
-                    n_features = full_selector.cv_results_["n_features"]
-                    total_features = X.shape[1]
-
-                    best_idx = int(np.argmax(scores))
-                    best_score = scores[best_idx]
-                    best_nfeat = n_features[best_idx]
-
-                    # Tolerance-selected index (if enabled)
-                    tol_idx = None
-                    if config.feature_score_tolerance is not None:
-                        threshold = best_score - config.feature_score_tolerance
-                        eligible = np.where(scores >= threshold)[0]
-                        tol_idx = eligible[np.argmin(n_features[eligible])]
-                        tol_score = scores[tol_idx]
-                        tol_nfeat = n_features[tol_idx]
-                        same_point = (tol_idx is not None and tol_idx == best_idx)
-
-                    error_max = scores + stds
-                    error_min = scores - stds
-
-                    fig = go.Figure()
-
-                    # --- 1 std band ---
-                    fig.add_trace(go.Scatter(
-                        x=np.concatenate([n_features, n_features[::-1]]),
-                        y=np.concatenate([error_max, error_min[::-1]]),
-                        fill='toself',
-                        opacity=0.9,
-                        name='±1 std',
-                        line=dict(color='lightgray')
-                    ))
-
-                    # --- Mean score curve ---
-                    fig.add_trace(go.Scatter(
-                        x=n_features,
-                        y=scores,
-                        mode='lines+markers',
-                        name='Mean CV score',
-                        line=dict(color='firebrick', width=2)
-                    ))
-
-                    # --- Best point ---
-                    if same_point:
-                        fig.add_trace(go.Scatter(
-                            x=[best_nfeat],
-                            y=[best_score],
-                            mode='markers+text',
-                            marker=dict(color='purple', size=11, symbol='diamond'),
-                            text=[f"score={best_score:.4f}"],
-                            textposition="top center",
-                            name="Best (selected)"
-                        ))
-
-                    else:
-                        # --- Best point ---
-                        fig.add_trace(go.Scatter(
-                            x=[best_nfeat],
-                            y=[best_score],
-                            mode='markers+text',
-                            marker=dict(color='red', size=10),
-                            text=[f"best<br>score={best_score:.4f}"],
-                            textposition="top center",
-                            name="Best"
-                        ))
-
-                        # --- Chosen (tolerance) point ---
-                        fig.add_trace(go.Scatter(
-                            x=[tol_nfeat],
-                            y=[tol_score],
-                            mode='markers+text',
-                            marker=dict(color='green', size=10),
-                            text=[f"selected<br>score={tol_score:.4f}<br>n={tol_nfeat}"],
-                            textposition="bottom center",
-                            name="Selected (within tolerance)"
-                        ))
-
-                    fig.update_layout(
-                        width=1000,height=650,margin=dict(l=90,r=40, t=120,b=80),
-                        yaxis_title = 'F1-score (weighted)',
-                        xaxis=dict(
-                            title="Selected features (out of {} total)".format(total_features),
-                            range=[1, (total_features+1)],
-                            tickmode="array",
-                            tickvals=[1, best_nfeat, tol_nfeat, total_features]
-                            if tol_idx is not None else [1, best_nfeat, total_features],
-                            ticktext=[
-                                "1",
-                                f"{best_nfeat}",
-                                f"{tol_nfeat}",
-                                f"{total_features}"
-                            ] if tol_idx is not None else [
-                                "1",
-                                f"{best_nfeat}",
-                                f"{total_features}"
-                            ],
-                        )
-                    )
-                    fig.update_yaxes(range=[
-                        min(error_min) - 0.05,
-                        max(error_max) + 0.05
-                    ])
-
-                    fig.write_image(figures_dir / f"{model_name}_RFECV.svg")
-                
-                except Exception as e:
-                    print(f"[PLOT] RFECV plot skipped: {e}")
-
-            final_model = clone(tuned_full).fit(X.loc[:, full_mask], y)
+            fit_columns = X.columns[full_mask].tolist()
+            final_model = clone(tuned_full).fit(X.loc[:, fit_columns], y)
             final_model.label_encoder_ = le
             final_models[model_name] = (final_model, full_mask)
 
@@ -464,7 +571,7 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
             package = {
                 "model": final_model,
                 "mask": full_mask,
-                "feature_names": selected_full,
+                "feature_names": fit_columns,
                 "label_encoder": le,
                 "best_params": final_params
             }
@@ -488,6 +595,9 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                 summary[f"std_{m}"] = float(np.std(values)) if len(values) > 1 else 0.0
 
             results.append(summary)
+
+            if feature_selection == "linear_model":
+                save_feature_selection_json(info, output_dir=config.output_dir)
 
             # ---- update leaderboard after every model ----
             write_leaderboard(

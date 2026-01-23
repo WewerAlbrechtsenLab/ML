@@ -12,22 +12,46 @@ from scipy import stats as scipy_stats
 _SCIPY_DIST_PATTERN = re.compile(r"^scipy\.stats\.(?P<name>[A-Za-z_][A-Za-z0-9_]*)\((?P<args>.*)\)$")
 
 
-@dataclass
+@dataclass(kw_only=True)
 class PipelineConfig:
-    data_path: str
-    target_cols: List[str]
+    # -------------------------
+    # Data & task & setup
+    # -------------------------
     task_type:  Literal["binary", "multiclass"]
     outer_splits: int
     inner_splits: int
     random_state: int
-    feature_selection: Literal["none", "univariate", "rfe", "rfecv"]
-    output_dir: str
-    feature_score_tolerance: float | None = None
-    feature_cols: Optional[List[str]] = None
-    holdout_fraction: Optional[float] = None
-    holdout_groups: Optional[List[str]] = None
+    # -------------------------
+    # Feature selection
+    # -------------------------
+    feature_selection: Literal[
+        "none",
+        "rfecv",
+        "linear_model",    
+    ]
+    feature_score_tolerance: float | None = None # when rfecv used
+
+    # when linear models used
+    linear_formula: Optional[str] = None    # example binary: y ~ C(target, Treatment(reference='control')) + age + C(sex)  or example multiclass "y ~ C(target, Treatment(reference='classA')) + age + C(sex)"
+    linear_filter_to: Optional[str] = None  # must match primary variable in formula
+    linear_alpha: float = 0.05
+    linear_pval_col: Literal["pval", "padj"] = "padj"
+    linear_coef_threshold: float = 0.0
+    linear_keep_k: Optional[int] = None
+    linear_keep_frac: Optional[float] = None
+    linear_max_features: Optional[int] = None
+
+    # -------------------------
+    # Models & search
+    # -------------------------
     model_registry: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     search_spaces: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
+    # -------------------------
+    # Output
+    # -------------------------
+    output_dir: str = "outputs"
+    data_path: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

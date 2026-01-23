@@ -1,24 +1,72 @@
+# ============================================================
+# Data & task
+# ============================================================
+
 data_path: ../data/test_preprocessed_data.tsv
-target_cols:
-  - group
-task_type: binary
-feature_cols: null
-outer_splits: 3 #choose your number of folds
-inner_splits: 2
+task_type:  binary         # "binary" or "multiclass"
+
+# ============================================================
+# Output
+# ============================================================
+
+output_dir: ../outputs
+
+# ============================================================
+# Cross-validation setup
+# ============================================================
+
+outer_splits: 3            # outer CV folds (model evaluation)
+inner_splits: 2            # inner CV folds (HP search / FS)
 random_state: 42
-feature_selection: rfecv # or none
-feature_score_tolerance: 0.001  #choose the metric tolerance when selecting features
+
+# ============================================================
+# Feature selection
+# ============================================================
+
+feature_selection: rfecv   # "none" | "rfecv" | "linear_model"
+
+# --- RFECV-specific ---
+feature_score_tolerance: 0.001  # Select smallest feature set within this metric drop from best
+
+# --- Linear-model-based FS (used only if feature_selection = linear_model) ---
+linear_formula: null
+# Examples:
+# binary:
+#   y ~ C(group, Treatment(reference='control')) + age + C(sex)
+# multiclass:
+#   y ~ C(group, Treatment(reference='classA')) + age + C(sex)
+
+linear_filter_to: null      # must match the primary variable in formula
+linear_alpha: 0.05
+linear_pval_col: padj       # "pval" or "padj"
+linear_coef_threshold: 0.0
+linear_keep_k: null         # absolute number of inner folds
+linear_keep_frac: null      # fraction of inner folds (0–1)
+linear_max_features: null   # optional hard cap after stability
+
+
+# ============================================================
+# Models registry
+# ============================================================
+
 model_registry:
-  # Bayesian / Gaussian
+
+  # --------------------
+  # Probabilistic
+  # --------------------
   gaussian_nb:
     classname: sklearn.naive_bayes.GaussianNB
     params: {}
-  # # Linear Models
+
+  # --------------------
+  # Linear models
+  # --------------------
   logistic_regression:
     classname: sklearn.linear_model.LogisticRegression
     params:
       max_iter: 5000
       random_state: 42
+
   sgd_logistic:
     classname: sklearn.linear_model.SGDClassifier
     params:
@@ -26,132 +74,148 @@ model_registry:
       max_iter: 5000
       random_state: 42
 
-  # SVM Models
   svm_linear:
     classname: sklearn.svm.LinearSVC
     params:
       random_state: 42
 
-  # # Discriminant Analysis
+  # --------------------
+  # Discriminant analysis
+  # --------------------
   lda:
     classname: sklearn.discriminant_analysis.LinearDiscriminantAnalysis
     params: {}
+
   qda:
     classname: sklearn.discriminant_analysis.QuadraticDiscriminantAnalysis
     params: {}
 
-  # Tree-based Models & Ensembles
+  # --------------------
+  # Tree-based & ensembles
+  # --------------------
   decision_tree:
     classname: sklearn.tree.DecisionTreeClassifier
     params:
       random_state: 42
-  extra_trees:
-    classname: sklearn.ensemble.ExtraTreesClassifier
-    params:
-      n_jobs: -1
-      random_state: 42
+
   random_forest:
     classname: sklearn.ensemble.RandomForestClassifier
     params:
       n_jobs: -1
       random_state: 42
+
+  extra_trees:
+    classname: sklearn.ensemble.ExtraTreesClassifier
+    params:
+      n_jobs: -1
+      random_state: 42
+
   gradient_boosting:
     classname: sklearn.ensemble.GradientBoostingClassifier
     params:
       random_state: 42
+
   hist_gradient_boosting:
     classname: sklearn.ensemble.HistGradientBoostingClassifier
     params:
       random_state: 42
-  
-  # Distance-based Models
+
+  # --------------------
+  # Distance-based
+  # --------------------
   knn:
     classname: sklearn.neighbors.KNeighborsClassifier
     params:
       n_jobs: -1
+
   nearest_centroid:
     classname: sklearn.neighbors.NearestCentroid
     params: {}
 
-  #Neural Networks
+  # --------------------
+  # Neural networks
+  # --------------------
   mlp:
     classname: sklearn.neural_network.MLPClassifier
     params:
       max_iter: 5000
       random_state: 42
-      early_stopping: True
+      early_stopping: true
       validation_fraction: 0.25
 
-search_spaces:
-  # Bayesian / Gaussian
-  gaussian_nb:
-    estimator__var_smoothing: [0.000000001, 0.00000001]
 
-  # Linear
+# ============================================================
+# Hyperparameter search spaces
+# ============================================================
+
+search_spaces:
+
+  gaussian_nb:
+    estimator__var_smoothing: [1e-9, 1e-8]
+
   logistic_regression:
     estimator__C: [0.1, 0.5, 1.0]
     estimator__solver: [liblinear, saga]
     estimator__penalty: [l1, l2, elasticnet]
     estimator__l1_ratio: [0.2, 0.4, 0.8]
+
   sgd_logistic:
     estimator__alpha: [0.0001, 0.001, 0.01]
     estimator__penalty: [l2, l1, elasticnet]
     estimator__l1_ratio: [0.2, 0.4, 0.8]
-  
-  # SVM
+
   svm_linear:
     estimator__C: [0.1, 1.0, 10.0]
     estimator__loss: [hinge, squared_hinge]
 
-  # Discriminant Analysis
   lda:
     estimator__solver: [svd, lsqr, eigen]
-    estimator__shrinkage: [null]  
+    estimator__shrinkage: [null]
+
   qda:
-    estimator__reg_param: [0.0, 0.1 , 0.2, 0.5, 0.8, 1.0]
- 
-  # Tree-based & Ensembles
+    estimator__reg_param: [0.0, 0.1, 0.2, 0.5, 0.8, 1.0]
+
   decision_tree:
     estimator__criterion: [gini, entropy]
     estimator__splitter: [best, random]
     estimator__min_samples_leaf: scipy.stats.randint(1, 11)
+
   random_forest:
-    estimator__n_estimators: scipy.stats.randint(1, 201)
+    estimator__n_estimators: scipy.stats.randint(50, 201)
     estimator__max_depth: scipy.stats.randint(1, 15)
     estimator__criterion: [gini, entropy]
     estimator__max_features: [log2]
     estimator__min_samples_leaf: scipy.stats.randint(1, 11)
+
   extra_trees:
-    estimator__n_estimators: scipy.stats.randint(1, 201)
+    estimator__n_estimators: scipy.stats.randint(50, 201)
     estimator__max_depth: scipy.stats.randint(1, 15)
     estimator__criterion: [gini, entropy]
     estimator__max_features: [log2]
     estimator__min_samples_leaf: scipy.stats.randint(1, 11)
+
   gradient_boosting:
-    estimator__n_estimators: scipy.stats.randint(1, 201)
+    estimator__n_estimators: scipy.stats.randint(50, 201)
     estimator__learning_rate: [0.05, 0.1]
     estimator__max_depth: scipy.stats.randint(1, 15)
     estimator__subsample: [0.8]
+
   hist_gradient_boosting:
     estimator__learning_rate: [0.05, 0.1]
     estimator__max_depth: [null, 6, 12]
     estimator__max_bins: [64, 128, 255]
     estimator__l2_regularization: [0.0, 0.1]
 
-  # Distance-based
   knn:
     estimator__n_neighbors: scipy.stats.randint(1, 11)
     estimator__weights: [distance]
     estimator__metric: [euclidean, manhattan, minkowski]
-  nearest_centroid:
-    estimator__shrink_threshold: [null, 1.0] 
 
-  # Neural Networks
+  nearest_centroid:
+    estimator__shrink_threshold: [null, 1.0]
+
   mlp:
-    estimator__hidden_layer_sizes: scipy.stats.randint(1, 201) 
-    estimator__activation: [relu, tanh, identity, logistic] 
+    estimator__hidden_layer_sizes: scipy.stats.randint(10, 201)
+    estimator__activation: [relu, tanh, identity, logistic]
     estimator__solver: [adam, sgd]
     estimator__batch_size: [10, 20, 50]
-    estimator__dropout: [0.0, 0.1, 0.2]
-
-output_dir: ../outputs_test
