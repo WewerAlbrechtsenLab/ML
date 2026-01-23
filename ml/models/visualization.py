@@ -1,9 +1,11 @@
 from __future__ import annotations
 import ast
+from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from sklearn.metrics import ConfusionMatrixDisplay, auc, roc_curve
+from sklearn.feature_selection import RFECV
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 
@@ -11,8 +13,6 @@ try:  # Display inline when running inside a notebook.
     from IPython.display import display  # type: ignore
 except Exception:  # pragma: no cover
     display = None  # type: ignore
-
-
 
 
 def safe_decode_fold_details(x):
@@ -213,3 +213,225 @@ def plot_roc_curves(
 
     return fig
 
+def extract_feature_stability(fs_json, model_name):
+    """
+    Returns a DataFrame with:
+      protein | n_outer | n_selected | stability | in_final
+    """
+
+    model_dict = fs_json[model_name]
+
+    # identify outer folds
+    outer_folds = {
+        k: set(v)
+        for k, v in model_dict.items()
+        if k.startswith("outer_") and "/" not in k
+    }
+
+    n_outer = len(outer_folds)
+
+    # final model (optional annotation)
+    final_set = set(model_dict.get("final", []))
+
+    # collect all proteins ever selected
+    all_proteins = set().union(*outer_folds.values())
+
+    rows = []
+    for protein in all_proteins:
+        n_selected = sum(
+            protein in fold for fold in outer_folds.values()
+        )
+
+        rows.append({
+            "protein": protein,
+            "n_outer": n_outer,
+            "n_selected": n_selected,
+            "stability": n_selected / n_outer,
+            "in_final": protein in final_set,
+        })
+
+    df = pd.DataFrame(rows).sort_values(
+        ["stability", "protein"], ascending=[False, True]
+    )
+    return df
+
+def plot_feature_stability(
+    fs_json,
+    model_name,
+    proteins="all",      # "all" | list[str] | "final"
+    top_k=None,
+    min_stability=0.0,
+    figsize=(10, 5),
+):
+    """
+    Bar plot of feature stability from outer CV folds.
+    """
+
+    df = extract_feature_stability(fs_json, model_name)
+
+    # ---- protein selection ----
+    if proteins == "final":
+        df = df[df["in_final"]]
+    elif isinstance(proteins, list):
+        df = df[df["protein"].isin(proteins)]
+
+    df = df[df["stability"] >= min_stability]
+
+    if top_k is not None:
+        df = df.head(top_k)
+
+    if df.empty:
+        raise ValueError("No proteins left after filtering.")
+
+    # ---- plotting ----
+    colors = df["in_final"].map({True: "tab:red", False: "tab:gray"})
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.bar(df["protein"], df["stability"], color=colors)
+
+    ax.set_ylabel("Outer-fold selection frequency")
+    ax.set_ylim(0, 1.05)
+    ax.set_title(f"Feature stability – {model_name}")
+
+    ax.axhline(0.5, linestyle="--", linewidth=1)
+    ax.text(0, 0.52, "50% stability", fontsize=9)
+
+    ax.tick_params(axis="x", rotation=90)
+
+    # legend
+    from matplotlib.patches import Patch
+    ax.legend(
+        handles=[
+            Patch(color="tab:red", label="In final model"),
+            Patch(color="tab:gray", label="Not in final model"),
+        ],
+        frameon=False,
+    )
+    plt.tight_layout()
+    fig = plt.gcf()
+
+    return fig
+
+def plot_rfecv_curve(
+    rfecv: RFECV,
+    total_features: int,
+    model_name: str,
+    output_dir: Path,
+    tolerance: float | None = None,
+    metric_name: str = "CV score",
+):
+    """
+    Plot RFECV performance curve with optional tolerance-based selection.
+
+    Parameters
+    ----------
+    rfecv : RFECV
+        Fitted RFECV object
+    total_features : int
+        Total number of features before selection
+    model_name : str
+        Model name (used for filename)
+    output_dir : Path
+        Directory where the figure will be saved
+    tolerance : float, optional
+        Score tolerance for near-optimal feature selection
+    metric_name : str
+        Label for y-axis
+    """
+
+    import numpy as np
+    import plotly.graph_objects as go
+
+    scores = rfecv.cv_results_["mean_test_score"]
+    stds = rfecv.cv_results_.get("std_test_score", np.zeros_like(scores))
+    n_features = rfecv.cv_results_["n_features"]
+
+    best_idx = int(np.argmax(scores))
+    best_score = scores[best_idx]
+    best_nfeat = n_features[best_idx]
+
+    tol_idx = None
+    if tolerance is not None:
+        threshold = best_score - tolerance
+        eligible = np.where(scores >= threshold)[0]
+        tol_idx = eligible[np.argmin(n_features[eligible])]
+        tol_score = scores[tol_idx]
+        tol_nfeat = n_features[tol_idx]
+        same_point = (tol_idx is not None and tol_idx == best_idx)
+
+    error_max = scores + stds
+    error_min = scores - stds
+
+    fig = go.Figure()
+
+    # ±1 std band
+    fig.add_trace(go.Scatter(
+        x=np.concatenate([n_features, n_features[::-1]]),
+        y=np.concatenate([error_max, error_min[::-1]]),
+        fill="toself",
+        opacity=0.25,
+        line=dict(color="lightgray"),
+        name="±1 std",
+    ))
+
+    # Mean curve
+    fig.add_trace(go.Scatter(
+        x=n_features,
+        y=scores,
+        mode="lines+markers",
+        line=dict(color="firebrick", width=2),
+        name="Mean CV score",
+    ))
+
+    # --- Best point ---
+    if same_point:
+        fig.add_trace(go.Scatter(
+            x=[best_nfeat],
+            y=[best_score],
+            mode='markers',
+            marker=dict(color='purple', size=11, symbol='diamond'),
+            name=f"Best = Selected (F1={best_score:.4f}, n={best_nfeat})",
+        ))
+
+    else:
+        # --- Best point ---
+        fig.add_trace(go.Scatter(
+            x=[best_nfeat],
+            y=[best_score],
+            mode='markers',
+            marker=dict(color='red', size=10),
+            name=f"Best (F1={best_score:.4f}, n={best_nfeat})",
+        ))
+
+    # Tolerance-selected point
+    if tol_idx is not None and tol_idx != best_idx:
+        fig.add_trace(go.Scatter(
+            x=[tol_nfeat],
+            y=[tol_score],
+            mode="markers",
+            marker=dict(color="green", size=10),
+            name=f"Selected (F1={tol_score:.4f}, n={tol_nfeat})",
+        ))
+
+    fig.update_layout(
+        width=1000,
+        height=650,
+        margin=dict(l=90, r=40, t=100, b=80),
+        title=f"RFECV – {model_name}",
+        yaxis_title=metric_name,
+        xaxis=dict(
+            title=f"Selected features)",
+            range=[1, total_features + 1],
+            tickmode="array",
+                            tickvals=[1, best_nfeat, tol_nfeat, total_features]
+                            if tol_idx is not None else [1, best_nfeat, total_features],
+        ),
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_dir / f"{model_name}_RFECV.svg"
+    fig.write_image(out_path)
+
+    print(f"[SAVED] RFECV plot → {out_path}")
+
+    return fig

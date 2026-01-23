@@ -1,15 +1,16 @@
-data_path: ../data/raw_data.tsv
-target_cols:
-  - 
 task_type: binary
-feature_cols: null
+
 outer_splits: 2
 inner_splits: 2
 random_state: 42
-holdout_fraction: null 
-holdout_groups: null
+
 feature_selection: rfecv 
-feature_score_tolerance: 0.001
+feature_score_tolerance : 0.01
+# linear_formula: y ~ C(target, Treatment(reference='control')) + age + C(sex)
+# linear_keep_k : 1
+# linear_filter_to: target
+# linear_alpha: 0.06
+
 
 model_registry:
   logistic_regression:
