@@ -210,7 +210,8 @@ def run_linear_models(
     coef_threshold=0.0,        # abs(coef) threshold
     keep_k=None,               # keep proteins present in >= keep_k inner folds
     keep_frac=None,            # alternative: keep proteins present in >= keep_frac (0-1)
-    max_features=None,         # optional cap after filtering
+    max_features=None,          # optional cap after filtering
+    mode="evaluation",         # "evaluation" | "deployment" 
     **linear_kwargs,
 ):
     """
@@ -236,10 +237,18 @@ def run_linear_models(
     proteome = X.copy()
     proteome.index = meta.index  # align for statsmodels
 
-    fs_info = {}
-    n_folds = 0
+    if mode == "deployment":
+        splits = [(np.arange(len(X)), None)]
+    else:
+        splits = list(inner_cv.split(X, y))
 
-    for fold_id, (tr_i, _) in enumerate(inner_cv.split(X, y), start=1):
+    n_folds = len(splits)
+    fs_info = {}
+    # split_info = {}   # for testing
+    
+    # n_folds = 0
+
+    for fold_id, (tr_i, _) in enumerate(splits, start=1):
         proteome_tr = proteome.iloc[tr_i]
         meta_tr = meta.iloc[tr_i]
 
@@ -261,13 +270,24 @@ def run_linear_models(
         )
 
         selected = set(res.index[passed])
-        print(
-            f"[Linear-FS][Inner {fold_id}] "
-            f"passed pval+coef: {len(selected)} features"
-        )
 
         fs_info[f"inner_fold_{fold_id}"] = selected
         n_folds += 1
+
+        fs_info[f"inner_fold_{fold_id}"] = selected
+        #split_info[f"inner_fold_{fold_id}"] = tr_i  # store indices
+
+        if mode == "evaluation":
+            print(
+                f"[Linear-FS][Inner {fold_id}] "
+                f"passed pval+coef: {len(selected)} features"
+            )
+        else:
+            print(
+                f"[Linear-FS][FULL DATA] "
+                f"passed pval+coef: {len(selected)} features"
+            )
+
 
     # -------------------------
     # Selection rule
@@ -279,21 +299,26 @@ def run_linear_models(
         for p in s:
             counts[p] = counts.get(p, 0) + 1
 
-    if keep_k is None and keep_frac is None:
-        keep_k_eff = n_folds           # default = intersection
-    elif keep_frac is not None:
-        keep_k_eff = int(np.ceil(keep_frac * n_folds))
+    if mode == "deployment":
+        keep_k_eff = 1
     else:
-        keep_k_eff = int(keep_k)
+        if keep_k is None and keep_frac is None:
+            keep_k_eff = n_folds
+        elif keep_frac is not None:
+            keep_k_eff = int(np.ceil(keep_frac * n_folds))
+        else:
+            keep_k_eff = int(keep_k)
+
 
     selected_features = [
         p for p, c in counts.items() if c >= keep_k_eff
     ]
+    if mode == "evaluation":
+        print(
+            f"[Linear-FS] After stability rule: "
+            f"{len(selected_features)} features"
+        )
 
-    print(
-        f"[Linear-FS] After stability rule: "
-        f"{len(selected_features)} features"
-    )
     # -------------------------
     # Fallback if empty
     # -------------------------
@@ -494,7 +519,10 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                 inner_cv,
                 model_name,
             )
-            print(f"\n---[FINAL] Best params: {final_params} ---")
+            print(
+                f"\n---[DEPLOYMENT MODEL | HP-SEARCH] "
+                f"Best params (CV refit on full data): {final_params} ---"
+            )
 
             full_mask = np.ones(X.shape[1], dtype=bool)
             selected_full = list(X.columns)
@@ -530,21 +558,26 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                     run_linear_models(
                         X,
                         y,
-                        inner_cv=inner_cv,
+                        inner_cv=None,
                         formula=config.linear_formula,
                         filter_to=config.linear_filter_to,
                         alpha=config.linear_alpha,
                         pval_col=config.linear_pval_col,
                         coef_threshold=config.linear_coef_threshold,
-                        keep_k=config.linear_keep_k,
-                        keep_frac=config.linear_keep_frac,
+                        keep_k=None,
+                        keep_frac=None,
                         max_features=config.linear_max_features,
+                        mode="deployment",
                     )
                 )
                 for inner_fold, proteins in fs_info.items():
                     info[model_name][f"final/{inner_fold}"] = set(proteins)
                 info[model_name]["final"] = set(selected_full)
-                print(f'\n---[FINAL Linear Model]  {len(selected_full)} features')
+                print(
+                    f"\n---[DEPLOYMENT | Linear FS] "
+                    f"{len(selected_full)} features selected on full dataset ---"
+                )
+
 
             else:
                 print(f"\n---[NO SELECTION] Using all {len(selected_full)} features")
