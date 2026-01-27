@@ -230,14 +230,16 @@ def extract_feature_stability(fs_json, model_name):
 
     n_outer = len(outer_folds)
 
-    # final model (optional annotation)
+    # final model proteins
     final_set = set(model_dict.get("final", []))
 
-    # collect all proteins ever selected
-    all_proteins = set().union(*outer_folds.values())
+    # proteins selected at least once during CV
+    cv_proteins = set().union(*outer_folds.values()) if outer_folds else set()
 
     rows = []
-    for protein in all_proteins:
+
+    # ---- CV-selected proteins ----
+    for protein in cv_proteins:
         n_selected = sum(
             protein in fold for fold in outer_folds.values()
         )
@@ -246,14 +248,33 @@ def extract_feature_stability(fs_json, model_name):
             "protein": protein,
             "n_outer": n_outer,
             "n_selected": n_selected,
-            "stability": n_selected / n_outer,
+            "stability": n_selected / n_outer if n_outer > 0 else 0.0,
             "in_final": protein in final_set,
         })
 
-    df = pd.DataFrame(rows).sort_values(
-        ["stability", "protein"], ascending=[False, True]
+    # ---- FINAL-ONLY proteins → zero stability ----
+    final_only = final_set - cv_proteins
+
+    for protein in final_only:
+        rows.append({
+            "protein": protein,
+            "n_outer": n_outer,
+            "n_selected": 0,
+            "stability": 0.0,
+            "in_final": True,
+        })
+
+    df = (
+        pd.DataFrame(rows)
+        .sort_values(
+            ["in_final", "stability", "protein"],
+            ascending=[False, False, True],
+        )
+        .reset_index(drop=True)
     )
+
     return df
+
 
 def plot_feature_stability(
     fs_json,
@@ -262,6 +283,7 @@ def plot_feature_stability(
     top_k=None,
     min_stability=0.0,
     figsize=(10, 5),
+    name_mapping=None,
 ):
     """
     Bar plot of feature stability from outer CV folds.
@@ -283,30 +305,36 @@ def plot_feature_stability(
     if df.empty:
         raise ValueError("No proteins left after filtering.")
 
+    # ---- apply gene-name mapping ----
+    if name_mapping is not None:
+        df["label"] = df["protein"].map(name_mapping).fillna(df["protein"])
+    else:
+        df["label"] = df["protein"]
+
     # ---- plotting ----
     colors = df["in_final"].map({True: "tab:red", False: "tab:gray"})
 
     fig, ax = plt.subplots(figsize=figsize)
-    ax.bar(df["protein"], df["stability"], color=colors)
+    ax.bar(df["label"], df["stability"], color=colors)
 
     ax.set_ylabel("Outer-fold selection frequency")
     ax.set_ylim(0, 1.05)
     ax.set_title(f"Feature stability – {model_name}")
 
     ax.axhline(0.5, linestyle="--", linewidth=1)
-    ax.text(0, 0.52, "50% stability", fontsize=9)
+    #ax.text(0, 0.52, "50% stability", fontsize=9)
 
     ax.tick_params(axis="x", rotation=90)
 
     # legend
     from matplotlib.patches import Patch
-    ax.legend(
-        handles=[
-            Patch(color="tab:red", label="In final model"),
-            Patch(color="tab:gray", label="Not in final model"),
-        ],
-        frameon=False,
-    )
+    # ax.legend(
+    #     handles=[
+    #         Patch(color="tab:red", label="In final model"),
+    #         Patch(color="tab:gray", label="Not in final model"),
+    #     ],
+    #     frameon=False,
+    # )
     plt.tight_layout()
     fig = plt.gcf()
 
