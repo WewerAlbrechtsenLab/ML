@@ -485,6 +485,9 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
 
                 tuned_estimator = clone(tuned_estimator).fit(Xtr, ytr)
                 y_pred = tuned_estimator.predict(Xte)
+                pos_class = 1
+                pos_idx = list(tuned_estimator.classes_).index(pos_class)   
+                y_pred_prob = tuned_estimator.predict_proba(Xte)[:,pos_idx]
 
                 fold = dict(
                     outer_fold=fold_idx,
@@ -492,6 +495,12 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                     selected_features=selected,
                     selected_feature_count=int(mask.sum()) if feature_selection != "none" else len(selected),
                     confusion_matrix=confusion_matrix(yte, y_pred).tolist(),
+                    y_true= yte.tolist(),
+                    y_pred=y_pred.tolist(),
+                    y_proba=y_pred_prob.tolist(),
+                    index= Xte.index.tolist(),
+                    classes=tuned_estimator.classes_.tolist()
+
                 )
 
                 classes = tuned_estimator.classes_

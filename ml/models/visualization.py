@@ -463,3 +463,52 @@ def plot_rfecv_curve(
     print(f"[SAVED] RFECV plot → {out_path}")
 
     return fig
+
+def load_outer_fold_predictions(
+    folds_json_path,
+    model_name,
+):
+    """
+    Load outer-fold predictions for a given model and return a DataFrame with:
+      - prob        : predicted probability (positive class)
+      - y_pred      : predicted label
+      - y_true      : true label
+      - outer_fold  : outer CV fold index
+      - index   : sample identifier (as index)
+
+    Parameters
+    ----------
+    folds_json_path : str or Path
+        Path to leaderboard_*_folds.json
+    model_name : str
+        Model key inside fold_history (e.g. 'logistic_regression')
+
+    Returns
+    -------
+    pd.DataFrame
+    """
+
+    folds_json_path = Path(folds_json_path)
+    fold_history = json.loads(folds_json_path.read_text())
+
+    if model_name not in fold_history:
+        raise KeyError(f"Model '{model_name}' not found in fold history")
+
+    dfs = []
+    for f in fold_history[model_name]:
+        df_tmp = pd.DataFrame(
+            {
+                "prob": f["y_proba"],
+                "y_pred": f["y_pred"],
+                "y_true": f["y_true"],
+                "outer_fold": f["outer_fold"],
+            }
+        )
+
+        # attach sample index safely
+        df_tmp["sample_id"] = f["index"]
+        dfs.append(df_tmp)
+
+    df = pd.concat(dfs, axis=0).set_index("sample_id")
+
+    return df
