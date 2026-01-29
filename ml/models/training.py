@@ -181,15 +181,38 @@ def select_mask_within_tolerance(rfecv: RFECV, tolerance: float):
 
     # Choose smallest number of features
     best_idx = eligible[np.argmin(n_features[eligible])]
+    print(f"Chosen feature set: {n_features[best_idx]}, Score: {scores[best_idx]:.4f}") 
 
-    # Build mask manually
-    support = rfecv.support_.copy()
+    #rfecv.n_features_ = n_features[best_idx]
+    estimator = rfecv.estimator_
 
-    # Re-run RFECV internals to get exact mask for that feature count
-    rfecv.n_features_to_select_ = n_features[best_idx]
-    support = rfecv._get_support_mask()
+    # Build mask manually 
+    # Check if `coef_` or `feature_importances_` are available
+    try:
+        if hasattr(estimator, "coef_"):  
+            feature_importance = estimator.coef_[0]  
+        elif hasattr(estimator, "feature_importances_"):  
+            feature_importance = estimator.feature_importances_
+        else:
+            # If neither is supported, skip importance-based selection and just use RFECV results
+            print("Feature importance not found in model. Skipping importance-based selection...")
+            return np.ones(len(n_features[best_idx]), dtype=bool)
+        
+    except AttributeError:
+        print("Feature importance not found in model. Skipping importance-based selection...")
+        return np.ones(len(n_features[best_idx]), dtype=bool)  
+    
+    # Sort feature importances (absolute values) and select top n
+    feature_importance_with_idx = enumerate(feature_importance)
+    feature_importance_sorted = sorted(feature_importance_with_idx, key=lambda x: abs(x[1]), reverse=False)
 
-    return support, {
+    # Select the top 'n' features based on sorted importance
+    top_n_idx = [idx for idx, _ in feature_importance_sorted[:n_features[best_idx]]]
+
+    mask = np.zeros(len(n_features), dtype=bool)
+    mask[top_n_idx] = True
+
+    return mask, {
         "best_score": float(best_score),
         "chosen_score": float(scores[best_idx]),
         "chosen_features": int(n_features[best_idx]),
@@ -413,6 +436,11 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
         fold_history[model_name] = []
         fold_scores = {m: [] for m in scoring} 
         info[model_name] = {}
+        X_final = X
+        final_mask = np.ones(X.shape[1], dtype=bool)
+        selected_full = list(X.columns)
+        full_selector = None
+        tol_info = None
 
 
         try:
@@ -533,11 +561,6 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                 f"Best params (CV refit on full data): {final_params} ---"
             )
 
-            full_mask = np.ones(X.shape[1], dtype=bool)
-            selected_full = list(X.columns)
-            full_selector = None
-            tol_info = None
-
             # ---- RFECV (optional) ----
             if feature_selection == "rfecv":
                 full_mask, full_selector = run_rfecv_once(
@@ -550,7 +573,7 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
 
                 # RFECV supported + tolerance enabled
                 if config.feature_score_tolerance is not None and full_selector is not None:
-                    full_mask, tol_info = select_mask_within_tolerance(
+                    final_mask, tol_info = select_mask_within_tolerance(
                         full_selector,
                         config.feature_score_tolerance
                     )
@@ -559,11 +582,12 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                         f"Chosen={tol_info['chosen_score']:.4f} | "
                         f"\n---[FINAL RFECV] {tol_info['chosen_features']}"
                     )
+                    print(final_mask.shape)
 
-                selected_full = X.columns[full_mask].tolist()
+                X_final = X.loc[:, final_mask]
 
             elif feature_selection == "linear_model":
-                full_mask, selected_full, fs_info = (
+                final_mask, selected_full, fs_info = (
                     run_linear_models(
                         X,
                         y,
@@ -592,7 +616,6 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                 print(f"\n---[NO SELECTION] Using all {len(selected_full)} features")
 
             # Plot RFECV results (if feature selection was performed)
-            #supports_rfecv = hasattr(tuned_full, "coef_") or hasattr(tuned_full, "feature_importances_")
 
             if feature_selection == "rfecv" and full_selector is not None:
                 plot_rfecv_curve(
@@ -603,17 +626,18 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                     tolerance=config.feature_score_tolerance,
                     metric_name=primary_metric,
                 )
-
-            fit_columns = X.columns[full_mask].tolist()
-            final_model = clone(tuned_full).fit(X.loc[:, fit_columns], y)
+            
+            X_final = X.loc[:, final_mask]
+            selected_full = X_final.columns.tolist()
+            final_model = clone(tuned_full).fit(X_final, y)
             final_model.label_encoder_ = le
-            final_models[model_name] = (final_model, full_mask)
+            final_models[model_name] = (final_model, final_mask)
 
             # Build the package to save
             package = {
                 "model": final_model,
-                "mask": full_mask,
-                "feature_names": fit_columns,
+                "mask": final_mask,
+                "feature_names": selected_full,
                 "label_encoder": le,
                 "best_params": final_params
             }
