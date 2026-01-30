@@ -8,6 +8,7 @@ from sklearn.metrics import ConfusionMatrixDisplay, auc, roc_curve
 from sklearn.feature_selection import RFECV
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
+import json
 
 try:  # Display inline when running inside a notebook.
     from IPython.display import display  # type: ignore
