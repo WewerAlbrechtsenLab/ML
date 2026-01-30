@@ -26,7 +26,7 @@ random_state: 42
 feature_selection: rfecv   # "none" | "rfecv" | "linear_model"
 
 # --- RFECV-specific ---
-feature_score_tolerance: 0.001  # Select smallest feature set within this metric drop from best
+feature_score_tolerance: 0.001  # Select smallest feature set within this metric drop from best, if you don't want tolerance set as 0
 
 # --- Linear-model-based FS (used only if feature_selection = linear_model) ---
 linear_formula: null
@@ -37,12 +37,12 @@ linear_formula: null
 #   y ~ C(group, Treatment(reference='classA')) + age + C(sex)
 
 linear_filter_to: null      # must match the primary variable in formula
-linear_alpha: 0.05
+linear_alpha: 0.05          # value of pval
 linear_pval_col: padj       # "pval" or "padj"
 linear_coef_threshold: 0.0
 linear_keep_k: null         # absolute number of inner folds
 linear_keep_frac: null      # fraction of inner folds (0–1)
-linear_max_features: null   # optional hard cap after stability
+linear_max_features: null   # optional hard cap after stability e.g 20 max features to keep
 
 
 # ============================================================
