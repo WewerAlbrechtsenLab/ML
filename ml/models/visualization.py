@@ -1,6 +1,7 @@
 from __future__ import annotations
 import ast
 from pathlib import Path
+from matplotlib import cm
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -17,65 +18,81 @@ except Exception:  # pragma: no cover
     display = None  # type: ignore
 
 
-def safe_decode_fold_details(x):
-    # Already decoded
-    if isinstance(x, (list, dict)):
-        return x
-    
-    if not isinstance(x, str):
-        return []
 
-    # Replace "inf" with a numeric value BEFORE parsing
-    cleaned = x.replace("inf", "1e309")  # float('inf') equivalent
-    
-    try:
-        return ast.literal_eval(cleaned)
-    except Exception:
-        print("FAILED TO DECODE ENTRY:", x[:200], "...")
-        return []
-    
+import json
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.metrics import ConfusionMatrixDisplay
 
-def decode_folds(x):
-    if not isinstance(x, str):
-        return []
+def plot_confusion(
+    json_path,
+    model,
+    labels=None,          # e.g. ["control", "case"]
+    normalize=None,       # None | "true" | "pred" | "all"
+    cmap="Blues",
+):
+    """
+    Plot aggregated confusion matrix across outer folds for one model.
 
-    # neutralize invalid tokens just enough to parse
-    x = re.sub(r"\b(nan|inf|-inf)\b", "None", x, flags=re.IGNORECASE)
+    Parameters
+    ----------
+    json_path : str or Path
+        Path to leaderboard_final_folds.json
+    model : str
+        Model name key in the JSON
+    labels : list[str] or None
+        Class labels (order must match confusion matrix)
+    normalize : None | "true" | "pred" | "all"
+        Normalization mode (sklearn-style)
+    """
 
-    try:
-        return ast.literal_eval(x)
-    except Exception:
-        return []
+    with open(json_path) as f:
+        results = json.load(f)
 
+    if model not in results:
+        raise ValueError(f"Model '{model}' not found in JSON")
 
+    model_folds = results[model]   # list of folds
 
-def plot_confusion_from_leaderboard(leaderboard, model, normalize=None):
-    folds = leaderboard.loc[leaderboard.model == model, "fold_details"].iloc[0]
+    cms = [
+        np.asarray(fold["confusion_matrix"], dtype=float)
+        for fold in model_folds
+        if isinstance(fold, dict) and "confusion_matrix" in fold
+    ]
 
-    # collect & sum matrices
-    matrices = []
-    for fold in folds:
-        cm = np.asarray(fold["confusion_matrix"], dtype=float)
-        matrices.append(cm)
+    if not cms:
+        raise ValueError(f"No confusion matrices found for model '{model}'")
 
-    agg = np.sum(matrices, axis=0)
+    cm = np.sum(cms, axis=0)
 
-    # normalize if needed
+    # ---------------------------
+    # Normalization
+    # ---------------------------
     if normalize == "true":
-        agg = agg / agg.sum(axis=1, keepdims=True)
+        cm = cm / cm.sum(axis=1, keepdims=True)
     elif normalize == "pred":
-        agg = agg / agg.sum(axis=0, keepdims=True)
+        cm = cm / cm.sum(axis=0, keepdims=True)
     elif normalize == "all":
-        agg = agg / agg.sum()
+        cm = cm / cm.sum()
 
-    # format correctly
     fmt = ".2f" if normalize else "d"
-    if not normalize:
-        agg = agg.round().astype(int)
+    cm_plot = cm.astype(int) if not normalize else cm
 
-    disp = ConfusionMatrixDisplay(confusion_matrix=agg)
-    disp.plot(values_format=fmt, cmap="Blues")
-    plt.title(f"Confusion Matrix (outer CV) — {model}")
+    disp = ConfusionMatrixDisplay(
+        confusion_matrix=cm_plot,
+        display_labels=labels,
+    )
+
+    disp.plot(
+        cmap=cmap,
+        values_format=fmt,
+    )
+
+    title = f"Confusion Matrix — {model}"
+    if normalize:
+        title += f" (normalized={normalize})"
+    plt.title(title)
+    plt.tight_layout()
     fig = plt.gcf()
 
     return fig
