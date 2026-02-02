@@ -76,4 +76,5 @@ After completing all outer folds, a final deployment model is trained using the 
 - Models and fixed parameters are defined in `model_registry`
 - Tunable hyperparameters are defined in `search_spaces`
 - Feature selection behavior is controlled entirely by the `feature_selection` section
+- The positive class is defined by the `positive_label` and is internally encoded as 1
    

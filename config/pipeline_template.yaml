@@ -37,12 +37,12 @@ linear_formula: null
 #   y ~ C(group, Treatment(reference='classA')) + age + C(sex)
 
 linear_filter_to: null      # must match the primary variable in formula
-linear_alpha: 0.05          # value of pval
+linear_alpha: 0.05          # significance threshold
 linear_pval_col: padj       # "pval" or "padj"
 linear_coef_threshold: 0.0
-linear_keep_k: null         # absolute number of inner folds
-linear_keep_frac: null      # fraction of inner folds (0–1)
-linear_max_features: null   # optional hard cap after stability e.g 20 max features to keep
+linear_keep_k: null         # stability criteria: absolute number of inner folds
+linear_keep_frac: null      # stability criteria: fraction of inner folds (0–1)
+linear_max_features: null   # stability criteria: optional hard cap after stability e.g 20 max features to keep
 
 
 # ============================================================

@@ -3,6 +3,7 @@ task_type: binary
 outer_splits: 2
 inner_splits: 2
 random_state: 42
+positive_label: 0
 
 feature_selection: rfecv 
 feature_score_tolerance : 0.01

@@ -21,6 +21,7 @@ class PipelineConfig:
     outer_splits: int
     inner_splits: int
     random_state: int
+    positive_label: str
     # -------------------------
     # Feature selection
     # -------------------------

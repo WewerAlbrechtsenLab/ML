@@ -34,6 +34,15 @@ def _ensure_series(y):
         return y.iloc[:, 0]
     return pd.Series(y)
 
+def json_safe(obj):
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, (np.ndarray,)):
+        return obj.tolist()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
 def save_feature_selection_json(feature_selection_dict, output_dir, filename="feature_selection_linear_model.json"):
     json_ready = {}
 
@@ -84,7 +93,7 @@ def write_leaderboard(results, primary_metric, fold_history, output_dir, prefix)
 
     try:
         leaderboard.to_csv(csv_path, index=False)
-        json_path.write_text(json.dumps(fold_history, indent=2))
+        json_path.write_text(json.dumps(fold_history, indent=2, default=json_safe))
         print(f"[LOG] Leaderboard updated: {csv_path}")
     except Exception as e:
         print(f"[WRITE ERROR] Could not write leaderboard: {e}")
@@ -111,7 +120,7 @@ def compute_roc(estimator, X, y, classes, task_type):
     # Binary
     if task_type == "binary":
         if scores.ndim == 2:
-            pos_idx = list(classes).index(1) if 1 in classes else 1
+            pos_idx = list(estimator.classes_).index(1)
             pos_scores = scores[:, pos_idx]
         else:
             pos_scores = scores
@@ -403,8 +412,10 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
     scoring = scoring_map(config.task_type)
     primary_metric = next(iter(scoring))
 
-    le = LabelEncoder()
-    y = pd.Series(le.fit_transform(y), index=y.index)
+    POS_LABEL = getattr(config, "positive_label", "case")  
+    y_bin = (y == POS_LABEL).astype(int)
+    y = pd.Series(y_bin.values, index=y.index)
+
 
     outer_cv = StratifiedKFold(config.outer_splits, shuffle=True, random_state=config.random_state)
     inner_cv = StratifiedKFold(config.inner_splits, shuffle=True, random_state=config.random_state)
@@ -501,9 +512,10 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
 
                 tuned_estimator = clone(tuned_estimator).fit(Xtr, ytr)
                 y_pred = tuned_estimator.predict(Xte)
-                pos_class = 1
-                pos_idx = list(tuned_estimator.classes_).index(pos_class)   
-                y_pred_prob = tuned_estimator.predict_proba(Xte)[:,pos_idx]
+
+                classes = list(tuned_estimator.classes_)
+                pos_idx = classes.index(1)
+                y_pred_prob = tuned_estimator.predict_proba(Xte)[:, pos_idx]
 
                 fold = dict(
                     outer_fold=fold_idx,
@@ -515,7 +527,7 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                     y_pred=y_pred.tolist(),
                     y_proba=y_pred_prob.tolist(),
                     index= Xte.index.tolist(),
-                    classes=tuned_estimator.classes_.tolist()
+                    classes=classes
 
                 )
 
@@ -619,7 +631,7 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
             X_final = X.loc[:, mask]
             features = X_final.columns.tolist()
             final_model = clone(tuned_estimator).fit(X_final, y)
-            final_model.label_encoder_ = le
+            #final_model.label_encoder_ = le
             final_models[model_name] = (final_model, mask)
 
             # Build the package to save
@@ -627,7 +639,7 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                 "model": final_model,
                 "mask": mask,
                 "feature_names": features,
-                "label_encoder": le,
+                "positive_label": POS_LABEL,
                 "best_params": final_params
             }
             final_models[model_name] = package
