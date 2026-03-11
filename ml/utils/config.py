@@ -52,7 +52,6 @@ class PipelineConfig:
     # Output
     # -------------------------
     output_dir: str = "outputs"
-    data_path: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

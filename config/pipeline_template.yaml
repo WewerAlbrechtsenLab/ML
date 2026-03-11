@@ -4,7 +4,7 @@
 
 data_path: ../data/test_preprocessed_data.tsv
 task_type:  binary         # "binary" or "multiclass"
-
+positive_label: 'case'  # specify only for binary tasks
 # ============================================================
 # Output
 # ============================================================

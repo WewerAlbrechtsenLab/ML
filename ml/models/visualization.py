@@ -10,41 +10,27 @@ from sklearn.feature_selection import RFECV
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 import json
-import re
-
+from matplotlib import rcParams
 try:  # Display inline when running inside a notebook.
     from IPython.display import display  # type: ignore
 except Exception:  # pragma: no cover
     display = None  # type: ignore
-
-
-
-import json
-import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import ConfusionMatrixDisplay
+from matplotlib.colors import LinearSegmentedColormap
+
+
 
 def plot_confusion(
     json_path,
     model,
-    labels=None,          # e.g. ["control", "case"]
-    normalize=None,       # None | "true" | "pred" | "all"
-    cmap="Blues",
+    labels=None,
+    normalize=None,
+    title=None,
+    colors=("#fffafa", "#E79600"),   # start → end color
 ):
-    """
-    Plot aggregated confusion matrix across outer folds for one model.
 
-    Parameters
-    ----------
-    json_path : str or Path
-        Path to leaderboard_final_folds.json
-    model : str
-        Model name key in the JSON
-    labels : list[str] or None
-        Class labels (order must match confusion matrix)
-    normalize : None | "true" | "pred" | "all"
-        Normalization mode (sklearn-style)
-    """
+    rcParams["font.family"] = "Arial"
+    rcParams["font.size"] = 12
 
     with open(json_path) as f:
         results = json.load(f)
@@ -52,7 +38,7 @@ def plot_confusion(
     if model not in results:
         raise ValueError(f"Model '{model}' not found in JSON")
 
-    model_folds = results[model]   # list of folds
+    model_folds = results[model]
 
     cms = [
         np.asarray(fold["confusion_matrix"], dtype=float)
@@ -65,9 +51,7 @@ def plot_confusion(
 
     cm = np.sum(cms, axis=0)
 
-    # ---------------------------
-    # Normalization
-    # ---------------------------
+    # normalization
     if normalize == "true":
         cm = cm / cm.sum(axis=1, keepdims=True)
     elif normalize == "pred":
@@ -78,27 +62,32 @@ def plot_confusion(
     fmt = ".2f" if normalize else "d"
     cm_plot = cm.astype(int) if not normalize else cm
 
+    # custom colormap
+    custom_cmap = LinearSegmentedColormap.from_list("custom", colors)
+
     disp = ConfusionMatrixDisplay(
         confusion_matrix=cm_plot,
-        display_labels=labels,
+        display_labels=labels
     )
 
     disp.plot(
-        cmap=cmap,
-        values_format=fmt,
+        cmap=custom_cmap,
+        values_format=fmt
     )
 
-    title = f"Confusion Matrix — {model}"
-    if normalize:
-        title += f" (normalized={normalize})"
+    # force black numbers
+    for text in disp.text_.ravel():
+        text.set_color("black")
+
+    if title is None:
+        title = f"Confusion Matrix — {model}"
+
     plt.title(title)
     plt.tight_layout()
-    fig = plt.gcf()
 
-    return fig
+    return plt.gcf()
 
-
-def butterfly_plot(df, var1, var2, var3, error1, error2, savepdf=True, group = 'model'):
+def butterfly_plot(df, var1, var2, var3, error1, error2, group = 'model'):
     fig = make_subplots(rows=1, cols=2, specs=[[{}, {}]], shared_xaxes=False, shared_yaxes=True, horizontal_spacing=0)
     fig.append_trace(go.Bar(x = df[var1], y = df[group], text = df[var1].round(4), error_x=dict(type='data', array=df[error1], arrayminus=np.zeros(len(df))), error_y=dict(type='data', array=df[error1]),
                         textposition='inside', orientation='h', width=0.7, 
@@ -108,10 +97,17 @@ def butterfly_plot(df, var1, var2, var3, error1, error2, savepdf=True, group = '
                  showlegend=False, marker_color='#ed7d31'), 1, 2) # 1,2 represents row 1 column 2
     fig.update_xaxes(title_text="Matthews Correlation Coefficient", row=1, col=1, range=[1,0])
     fig.update_xaxes(title_text="AUROC", row=1, col=2)
-    fig.update_layout(width=800, height=700, title_x=0.5,xaxis1={'side': 'top'},xaxis2={'side': 'top'},)
+    fig.update_layout(
+        width=800, 
+        height=700, 
+        title_x=0.5, 
+        xaxis1={'side': 'top'}, 
+        xaxis2={'side': 'top'},
+        font=dict(family='Arial', size=12),  # Setting the font to Arial with size 12
+    )
+    
     fig.update_layout(template='plotly_white')
-    if savepdf:
-        fig.write_image('figures/3b.png')
+    
     return fig
 
 def extract_feature_stability(fs_json, model_name):
@@ -213,6 +209,8 @@ def plot_feature_stability(
         df["label"] = df["protein"]
 
     # ---- plotting ----
+    rcParams['font.family'] = 'Arial'  # Set font to Arial
+    rcParams['font.size'] = 12         # Set font size to 12
     colors = df["in_final"].map({True: "tab:red", False: "tab:gray"})
 
     fig, ax = plt.subplots(figsize=figsize)
@@ -504,6 +502,8 @@ def plot_roc_curves(
     # ---------------------------
     # Final plot formatting
     # ---------------------------
+    rcParams['font.family'] = 'Arial'
+    rcParams['font.size'] = 12
     plt.plot([0, 1], [0, 1], linestyle="--", color="grey", alpha=0.6)
     plt.xlabel("False Positive Rate")
     plt.ylabel("True Positive Rate")
