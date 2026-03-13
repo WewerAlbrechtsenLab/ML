@@ -17,6 +17,7 @@ class PipelineConfig:
     # -------------------------
     # Data & task & setup
     # -------------------------
+    data_path: Optional[str]
     task_type:  Literal["binary", "multiclass"]
     outer_splits: int
     inner_splits: int
