@@ -1,3 +1,4 @@
+data_path: None
 task_type: binary
 
 outer_splits: 2

@@ -1,36 +1,63 @@
 from __future__ import annotations
-import ast
+
+import json
 from pathlib import Path
-from matplotlib import cm
-import matplotlib.pyplot as plt
+
 import numpy as np
 import pandas as pd
-from sklearn.metrics import ConfusionMatrixDisplay, auc, roc_curve
+import matplotlib.pyplot as plt
+from matplotlib import rcParams
+from matplotlib.colors import LinearSegmentedColormap
+from sklearn.metrics import ConfusionMatrixDisplay
 from sklearn.feature_selection import RFECV
+
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
-import json
-from matplotlib import rcParams
-try:  # Display inline when running inside a notebook.
+
+try:
     from IPython.display import display  # type: ignore
-except Exception:  # pragma: no cover
+except Exception:
     display = None  # type: ignore
-import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
 
 
+# -------------------------------------------------------------------
+# GLOBAL SETTINGS FOR EDITABLE TEXT
+# -------------------------------------------------------------------
+def set_editable_text_defaults(font_family: str = "Arial", font_size: int = 12):
+    """
+    Set matplotlib defaults so exported SVG/PDF keeps text editable.
+    """
+    rcParams["font.family"] = font_family
+    rcParams["font.size"] = font_size
 
+    # IMPORTANT: keep text as text in SVG instead of paths
+    rcParams["svg.fonttype"] = "none"
+
+    # Better editable text in PDF/PS
+    rcParams["pdf.fonttype"] = 42
+    rcParams["ps.fonttype"] = 42
+
+
+# apply once globally
+set_editable_text_defaults()
+
+
+# -------------------------------------------------------------------
+# CONFUSION MATRIX
+# -------------------------------------------------------------------
 def plot_confusion(
     json_path,
     model,
     labels=None,
     normalize=None,
     title=None,
-    colors=("#fffafa", "#E79600"),   # start → end color
+    colors=("#fffafa", "#E79600"),
 ):
-
-    rcParams["font.family"] = "Arial"
-    rcParams["font.size"] = 12
+    """
+    Plot summed confusion matrix from JSON folds.
+    Text remains editable when saved as SVG/PDF.
+    """
+    set_editable_text_defaults()
 
     with open(json_path) as f:
         results = json.load(f)
@@ -49,76 +76,121 @@ def plot_confusion(
     if not cms:
         raise ValueError(f"No confusion matrices found for model '{model}'")
 
-    cm = np.sum(cms, axis=0)
+    cm_sum = np.sum(cms, axis=0)
 
-    # normalization
     if normalize == "true":
-        cm = cm / cm.sum(axis=1, keepdims=True)
+        cm_plot = cm_sum / cm_sum.sum(axis=1, keepdims=True)
     elif normalize == "pred":
-        cm = cm / cm.sum(axis=0, keepdims=True)
+        cm_plot = cm_sum / cm_sum.sum(axis=0, keepdims=True)
     elif normalize == "all":
-        cm = cm / cm.sum()
+        cm_plot = cm_sum / cm_sum.sum()
+    else:
+        cm_plot = cm_sum.astype(int)
 
     fmt = ".2f" if normalize else "d"
-    cm_plot = cm.astype(int) if not normalize else cm
-
-    # custom colormap
     custom_cmap = LinearSegmentedColormap.from_list("custom", colors)
 
+    fig, ax = plt.subplots()
     disp = ConfusionMatrixDisplay(
         confusion_matrix=cm_plot,
         display_labels=labels
     )
+    disp.plot(cmap=custom_cmap, values_format=fmt, ax=ax, colorbar=False)
 
-    disp.plot(
-        cmap=custom_cmap,
-        values_format=fmt
-    )
-
-    # force black numbers
-    for text in disp.text_.ravel():
-        text.set_color("black")
+    if disp.text_ is not None:
+        for text in disp.text_.ravel():
+            if text is not None:
+                text.set_color("black")
 
     if title is None:
         title = f"Confusion Matrix — {model}"
 
-    plt.title(title)
-    plt.tight_layout()
-
-    return plt.gcf()
-
-def butterfly_plot(df, var1, var2, var3, error1, error2, group = 'model'):
-    fig = make_subplots(rows=1, cols=2, specs=[[{}, {}]], shared_xaxes=False, shared_yaxes=True, horizontal_spacing=0)
-    fig.append_trace(go.Bar(x = df[var1], y = df[group], text = df[var1].round(4), error_x=dict(type='data', array=df[error1], arrayminus=np.zeros(len(df))), error_y=dict(type='data', array=df[error1]),
-                        textposition='inside', orientation='h', width=0.7, 
-                        showlegend=False, marker_color='#4472c4'), 1, 1) # 1,1 represents row 1 column 1
-    fig.append_trace(go.Bar(x = df[var2], y = df[group], text = df[var2].round(4), error_x=dict(type='data', array=df[error2], arrayminus=np.zeros(len(df))), error_y=dict(type='data', array=df[error2]),
-                 textposition='inside', orientation='h', width=0.7, 
-                 showlegend=False, marker_color='#ed7d31'), 1, 2) # 1,2 represents row 1 column 2
-    fig.update_xaxes(title_text="Matthews Correlation Coefficient", row=1, col=1, range=[1,0])
-    fig.update_xaxes(title_text="AUROC", row=1, col=2)
-    fig.update_layout(
-        width=800, 
-        height=700, 
-        title_x=0.5, 
-        xaxis1={'side': 'top'}, 
-        xaxis2={'side': 'top'},
-        font=dict(family='Arial', size=12),  # Setting the font to Arial with size 12
-    )
-    
-    fig.update_layout(template='plotly_white')
-    
+    ax.set_title(title)
+    fig.tight_layout()
     return fig
 
+
+# -------------------------------------------------------------------
+# BUTTERFLY PLOT (PLOTLY)
+# -------------------------------------------------------------------
+def butterfly_plot(df, var1, var2, var3, error1, error2, group="model"):
+    
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        specs=[[{}, {}]],
+        shared_xaxes=False,
+        shared_yaxes=True,
+        horizontal_spacing=0
+    )
+
+    fig.add_trace(
+        go.Bar(
+            x=df[var1],
+            y=df[group],
+            text=df[var1].round(4),
+            error_x=dict(type="data", array=df[error1], arrayminus=np.zeros(len(df))),
+            textposition="inside",
+            orientation="h",
+            width=0.7,
+            showlegend=False,
+            marker_color="#4472c4",
+        ),
+        row=1,
+        col=1,
+    )
+
+    fig.add_trace(
+        go.Bar(
+            x=df[var2],
+            y=df[group],
+            text=df[var2].round(4),
+            error_x=dict(type="data", array=df[error2], arrayminus=np.zeros(len(df))),
+            textposition="inside",
+            orientation="h",
+            width=0.7,
+            showlegend=False,
+            marker_color="#ed7d31",
+        ),
+        row=1,
+        col=2,
+    )
+
+    fig.update_xaxes(
+        title_text="Matthews Correlation Coefficient",
+        row=1,
+        col=1,
+        range=[1, 0],
+        side="top"
+    )
+    fig.update_xaxes(
+        title_text="AUROC",
+        row=1,
+        col=2,
+        side="top"
+    )
+
+    fig.update_layout(
+        width=800,
+        height=700,
+        title_x=0.5,
+        template="plotly_white",
+        font=dict(family="Arial", size=12),
+    )
+
+    return fig
+
+
+# -------------------------------------------------------------------
+# FEATURE STABILITY TABLE
+# -------------------------------------------------------------------
 def extract_feature_stability(fs_json, model_name):
     """
     Returns a DataFrame with:
       protein | n_outer | n_selected | stability | in_final
     """
-
     model_dict = fs_json[model_name]
 
-    # identify outer folds
     outer_folds = {
         k: set(v)
         for k, v in model_dict.items()
@@ -126,21 +198,13 @@ def extract_feature_stability(fs_json, model_name):
     }
 
     n_outer = len(outer_folds)
-
-    # final model proteins
     final_set = set(model_dict.get("final", []))
-
-    # proteins selected at least once during CV
     cv_proteins = set().union(*outer_folds.values()) if outer_folds else set()
 
     rows = []
 
-    # ---- CV-selected proteins ----
     for protein in cv_proteins:
-        n_selected = sum(
-            protein in fold for fold in outer_folds.values()
-        )
-
+        n_selected = sum(protein in fold for fold in outer_folds.values())
         rows.append({
             "protein": protein,
             "n_outer": n_outer,
@@ -149,9 +213,7 @@ def extract_feature_stability(fs_json, model_name):
             "in_final": protein in final_set,
         })
 
-    # ---- FINAL-ONLY proteins → zero stability ----
     final_only = final_set - cv_proteins
-
     for protein in final_only:
         rows.append({
             "protein": protein,
@@ -173,6 +235,9 @@ def extract_feature_stability(fs_json, model_name):
     return df
 
 
+# -------------------------------------------------------------------
+# FEATURE STABILITY PLOT
+# -------------------------------------------------------------------
 def plot_feature_stability(
     fs_json,
     model_name,
@@ -182,13 +247,10 @@ def plot_feature_stability(
     figsize=(10, 5),
     name_mapping=None,
 ):
-    """
-    Bar plot of feature stability from outer CV folds.
-    """
+    set_editable_text_defaults()
 
     df = extract_feature_stability(fs_json, model_name)
 
-    # ---- protein selection ----
     if proteins == "final":
         df = df[df["in_final"]]
     elif isinstance(proteins, list):
@@ -202,15 +264,12 @@ def plot_feature_stability(
     if df.empty:
         raise ValueError("No proteins left after filtering.")
 
-    # ---- apply gene-name mapping ----
+    df = df.copy()
     if name_mapping is not None:
         df["label"] = df["protein"].map(name_mapping).fillna(df["protein"])
     else:
         df["label"] = df["protein"]
 
-    # ---- plotting ----
-    rcParams['font.family'] = 'Arial'  # Set font to Arial
-    rcParams['font.size'] = 12         # Set font size to 12
     colors = df["in_final"].map({True: "tab:red", False: "tab:gray"})
 
     fig, ax = plt.subplots(figsize=figsize)
@@ -219,79 +278,54 @@ def plot_feature_stability(
     ax.set_ylabel("Outer-fold selection frequency")
     ax.set_ylim(0, 1.05)
     ax.set_title(f"Feature stability – {model_name}")
-
     ax.axhline(0.5, linestyle="--", linewidth=1)
-    #ax.text(0, 0.52, "50% stability", fontsize=9)
-
     ax.tick_params(axis="x", rotation=90)
 
-    # legend
-    from matplotlib.patches import Patch
-    # ax.legend(
-    #     handles=[
-    #         Patch(color="tab:red", label="In final model"),
-    #         Patch(color="tab:gray", label="Not in final model"),
-    #     ],
-    #     frameon=False,
-    # )
-    plt.tight_layout()
-    fig = plt.gcf()
-
+    fig.tight_layout()
     return fig
 
+
+# -------------------------------------------------------------------
+# RFECV CURVE (PLOTLY)
+# -------------------------------------------------------------------
 def plot_rfecv_curve(
     rfecv: RFECV,
     total_features: int,
     model_name: str,
-    output_dir: Path,
+    output_dir: Path | None = None,
     tolerance: float | None = None,
     metric_name: str = "CV score",
 ):
     """
-    Plot RFECV performance curve with optional tolerance-based selection.
-
-    Parameters
-    ----------
-    rfecv : RFECV
-        Fitted RFECV object
-    total_features : int
-        Total number of features before selection
-    model_name : str
-        Model name (used for filename)
-    output_dir : Path
-        Directory where the figure will be saved
-    tolerance : float, optional
-        Score tolerance for near-optimal feature selection
-    metric_name : str
-        Label for y-axis
+    Plot RFECV performance curve.
+    If output_dir is given, saves as SVG with editable text.
     """
-
-    import numpy as np
-    import plotly.graph_objects as go
-
-    scores = rfecv.cv_results_["mean_test_score"]
-    stds = rfecv.cv_results_.get("std_test_score", np.zeros_like(scores))
-    n_features = rfecv.cv_results_["n_features"]
+    scores = np.asarray(rfecv.cv_results_["mean_test_score"])
+    stds = np.asarray(rfecv.cv_results_.get("std_test_score", np.zeros_like(scores)))
+    n_features = np.asarray(rfecv.cv_results_["n_features"])
 
     best_idx = int(np.argmax(scores))
     best_score = scores[best_idx]
     best_nfeat = n_features[best_idx]
 
     tol_idx = None
+    tol_score = None
+    tol_nfeat = None
+    same_point = False
+
     if tolerance is not None:
         threshold = best_score - tolerance
         eligible = np.where(scores >= threshold)[0]
         tol_idx = eligible[np.argmin(n_features[eligible])]
         tol_score = scores[tol_idx]
         tol_nfeat = n_features[tol_idx]
-        same_point = (tol_idx is not None and tol_idx == best_idx)
+        same_point = tol_idx == best_idx
 
     error_max = scores + stds
     error_min = scores - stds
 
     fig = go.Figure()
 
-    # ±1 std band
     fig.add_trace(go.Scatter(
         x=np.concatenate([n_features, n_features[::-1]]),
         y=np.concatenate([error_max, error_min[::-1]]),
@@ -301,7 +335,6 @@ def plot_rfecv_curve(
         name="±1 std",
     ))
 
-    # Mean curve
     fig.add_trace(go.Scatter(
         x=n_features,
         y=scores,
@@ -310,35 +343,36 @@ def plot_rfecv_curve(
         name="Mean CV score",
     ))
 
-    # --- Best point ---
     if same_point:
         fig.add_trace(go.Scatter(
             x=[best_nfeat],
             y=[best_score],
-            mode='markers',
-            marker=dict(color='purple', size=11, symbol='diamond'),
-            name=f"Best = Selected (F1={best_score:.4f}, n={best_nfeat})",
+            mode="markers",
+            marker=dict(color="purple", size=11, symbol="diamond"),
+            name=f"Best = Selected ({metric_name}={best_score:.4f}, n={best_nfeat})",
         ))
-
     else:
-        # --- Best point ---
         fig.add_trace(go.Scatter(
             x=[best_nfeat],
             y=[best_score],
-            mode='markers',
-            marker=dict(color='red', size=10),
-            name=f"Best (F1={best_score:.4f}, n={best_nfeat})",
+            mode="markers",
+            marker=dict(color="red", size=10),
+            name=f"Best ({metric_name}={best_score:.4f}, n={best_nfeat})",
         ))
 
-    # Tolerance-selected point
     if tol_idx is not None and tol_idx != best_idx:
         fig.add_trace(go.Scatter(
             x=[tol_nfeat],
             y=[tol_score],
             mode="markers",
             marker=dict(color="green", size=10),
-            name=f"Selected (F1={tol_score:.4f}, n={tol_nfeat})",
+            name=f"Selected ({metric_name}={tol_score:.4f}, n={tol_nfeat})",
         ))
+
+    tickvals = [1, int(best_nfeat), int(total_features)]
+    if tol_nfeat is not None:
+        tickvals.append(int(tol_nfeat))
+    tickvals = sorted(set(tickvals))
 
     fig.update_layout(
         width=1000,
@@ -347,46 +381,40 @@ def plot_rfecv_curve(
         title=f"RFECV – {model_name}",
         yaxis_title=metric_name,
         xaxis=dict(
-            title=f"Selected features)",
+            title="Selected features",
             range=[1, total_features + 1],
             tickmode="array",
-                            tickvals=[1, best_nfeat, tol_nfeat, total_features]
-                            if tol_idx is not None else [1, best_nfeat, total_features],
+            tickvals=tickvals,
         ),
+        font=dict(family="Arial", size=12),
+        template="plotly_white",
     )
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    out_path = output_dir / f"{model_name}_RFECV.svg"
-    fig.write_image(out_path)
-
-    print(f"[SAVED] RFECV plot → {out_path}")
+    if output_dir is not None:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        out_path = output_dir / f"{model_name}_RFECV.svg"
+        fig.write_image(str(out_path), format="svg")
+        print(f"[SAVED] RFECV plot → {out_path}")
 
     return fig
 
+
+# -------------------------------------------------------------------
+# LOAD OUTER FOLD PREDICTIONS
+# -------------------------------------------------------------------
 def load_outer_fold_predictions(
     folds_json_path,
     model_name,
 ):
     """
     Load outer-fold predictions for a given model and return a DataFrame with:
-      - prob        : predicted probability (positive class)
-      - y_pred      : predicted label
-      - y_true      : true label
-      - outer_fold  : outer CV fold index
-      - index   : sample identifier (as index)
-
-    Parameters
-    ----------
-    folds_json_path : str or Path
-        Path to leaderboard_*_folds.json
-    model_name : str
-        Model key inside fold_history (e.g. 'logistic_regression')
-
-    Returns
-    -------
-    pd.DataFrame
+      - prob
+      - y_pred
+      - y_true
+      - outer_fold
+      - sample_id as index
     """
-
     folds_json_path = Path(folds_json_path)
     fold_history = json.loads(folds_json_path.read_text())
 
@@ -395,23 +423,22 @@ def load_outer_fold_predictions(
 
     dfs = []
     for f in fold_history[model_name]:
-        df_tmp = pd.DataFrame(
-            {
-                "prob": f["y_proba"],
-                "y_pred": f["y_pred"],
-                "y_true": f["y_true"],
-                "outer_fold": f["outer_fold"],
-            }
-        )
-
-        # attach sample index safely
-        df_tmp["sample_id"] = f["index"]
+        df_tmp = pd.DataFrame({
+            "prob": f["y_proba"],
+            "y_pred": f["y_pred"],
+            "y_true": f["y_true"],
+            "outer_fold": f["outer_fold"],
+            "sample_id": f["index"],
+        })
         dfs.append(df_tmp)
 
     df = pd.concat(dfs, axis=0).set_index("sample_id")
-
     return df
 
+
+# -------------------------------------------------------------------
+# ROC CURVES
+# -------------------------------------------------------------------
 def plot_roc_curves(
     leaderboard_csv,
     folds_json_path,
@@ -419,9 +446,8 @@ def plot_roc_curves(
     figsize=(9, 7),
     n_grid=300,
 ):
-    # ---------------------------
-    # Load data
-    # ---------------------------
+    set_editable_text_defaults()
+
     if isinstance(leaderboard_csv, (str, Path)):
         leaderboard = pd.read_csv(leaderboard_csv)
     else:
@@ -430,9 +456,6 @@ def plot_roc_curves(
     with open(folds_json_path, "r") as f:
         fold_history = json.load(f)
 
-    # ---------------------------
-    # Select models
-    # ---------------------------
     if models == "all":
         model_names = leaderboard["model"].tolist()
     else:
@@ -443,15 +466,9 @@ def plot_roc_curves(
     if not model_names:
         raise ValueError("No models selected for ROC plotting")
 
-    # ---------------------------
-    # Setup grid
-    # ---------------------------
     fpr_grid = np.linspace(0, 1, n_grid)
-    plt.figure(figsize=figsize)
+    fig, ax = plt.subplots(figsize=figsize)
 
-    # ======================================================
-    # Iterate models
-    # ======================================================
     for model_name in model_names:
         folds = fold_history.get(model_name)
 
@@ -469,7 +486,6 @@ def plot_roc_curves(
             fpr = np.asarray(roc["fpr"], dtype=float)
             tpr = np.asarray(roc["tpr"], dtype=float)
 
-            # interpolate to common grid
             tpr_interp = np.interp(fpr_grid, fpr, tpr)
             tpr_interp[0] = 0.0
             tprs.append(tpr_interp)
@@ -486,29 +502,25 @@ def plot_roc_curves(
         mean_auc = np.mean(aucs) if aucs else np.nan
         std_auc = np.std(aucs) if aucs else np.nan
 
-        plt.plot(
+        ax.plot(
             fpr_grid,
             mean_tpr,
             label=f"{model_name} (AUC = {mean_auc:.3f} ± {std_auc:.3f})",
         )
 
-        plt.fill_between(
+        ax.fill_between(
             fpr_grid,
             np.maximum(mean_tpr - std_tpr, 0),
             np.minimum(mean_tpr + std_tpr, 1),
             alpha=0.2,
         )
 
-    # ---------------------------
-    # Final plot formatting
-    # ---------------------------
-    rcParams['font.family'] = 'Arial'
-    rcParams['font.size'] = 12
-    plt.plot([0, 1], [0, 1], linestyle="--", color="grey", alpha=0.6)
-    plt.xlabel("False Positive Rate")
-    plt.ylabel("True Positive Rate")
-    plt.title("Mean ROC Curve (Outer CV)")
-    plt.legend(loc="lower right")
-    plt.grid(True)
-    plt.tight_layout()
-    return plt.gcf()
+    ax.plot([0, 1], [0, 1], linestyle="--", color="grey", alpha=0.6)
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+    ax.set_title("Mean ROC Curve (Outer CV)")
+    ax.legend(loc="lower right")
+    ax.grid(True)
+
+    fig.tight_layout()
+    return fig
