@@ -286,10 +286,17 @@ def plot_feature_stability(
 
 
 # -------------------------------------------------------------------
-# RFECV CURVE (PLOTLY)
+# RFECV CURVE 
 # -------------------------------------------------------------------
+
+from pathlib import Path
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import rcParams
+
+
 def plot_rfecv_curve(
-    rfecv: RFECV,
+    rfecv,
     total_features: int,
     model_name: str,
     output_dir: Path | None = None,
@@ -297,17 +304,27 @@ def plot_rfecv_curve(
     metric_name: str = "CV score",
 ):
     """
-    Plot RFECV performance curve.
-    If output_dir is given, saves as SVG with editable text.
+    RFECV plot using matplotlib.
     """
+    set_editable_text_defaults()
+
+    # Data
     scores = np.asarray(rfecv.cv_results_["mean_test_score"])
     stds = np.asarray(rfecv.cv_results_.get("std_test_score", np.zeros_like(scores)))
     n_features = np.asarray(rfecv.cv_results_["n_features"])
 
+    # Sort
+    order = np.argsort(n_features)
+    n_features = n_features[order]
+    scores = scores[order]
+    stds = stds[order]
+
+    # Best
     best_idx = int(np.argmax(scores))
     best_score = scores[best_idx]
     best_nfeat = n_features[best_idx]
 
+    # Tolerance
     tol_idx = None
     tol_score = None
     tol_nfeat = None
@@ -321,83 +338,78 @@ def plot_rfecv_curve(
         tol_nfeat = n_features[tol_idx]
         same_point = tol_idx == best_idx
 
-    error_max = scores + stds
-    error_min = scores - stds
+    # Plot
+    plt.figure(figsize=(10, 6))
 
-    fig = go.Figure()
+    plt.fill_between(
+        n_features,
+        scores - stds,
+        scores + stds,
+        alpha=0.2,
+        label="±1 std"
+    )
 
-    fig.add_trace(go.Scatter(
-        x=np.concatenate([n_features, n_features[::-1]]),
-        y=np.concatenate([error_max, error_min[::-1]]),
-        fill="toself",
-        opacity=0.25,
-        line=dict(color="lightgray"),
-        name="±1 std",
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=n_features,
-        y=scores,
-        mode="lines+markers",
-        line=dict(color="firebrick", width=2),
-        name="Mean CV score",
-    ))
+    plt.plot(
+        n_features,
+        scores,
+        marker="o",
+        linewidth=2,
+        label="Mean CV score"
+    )
 
     if same_point:
-        fig.add_trace(go.Scatter(
-            x=[best_nfeat],
-            y=[best_score],
-            mode="markers",
-            marker=dict(color="purple", size=11, symbol="diamond"),
-            name=f"Best = Selected ({metric_name}={best_score:.4f}, n={best_nfeat})",
-        ))
+        plt.scatter(
+            best_nfeat,
+            best_score,
+            color="purple",
+            s=80,
+            marker="D",
+            label=f"Best = Selected ({metric_name}={best_score:.4f}, n={best_nfeat})"
+        )
     else:
-        fig.add_trace(go.Scatter(
-            x=[best_nfeat],
-            y=[best_score],
-            mode="markers",
-            marker=dict(color="red", size=10),
-            name=f"Best ({metric_name}={best_score:.4f}, n={best_nfeat})",
-        ))
+        plt.scatter(
+            best_nfeat,
+            best_score,
+            color="red",
+            s=70,
+            label=f"Best ({metric_name}={best_score:.4f}, n={best_nfeat})"
+        )
 
     if tol_idx is not None and tol_idx != best_idx:
-        fig.add_trace(go.Scatter(
-            x=[tol_nfeat],
-            y=[tol_score],
-            mode="markers",
-            marker=dict(color="green", size=10),
-            name=f"Selected ({metric_name}={tol_score:.4f}, n={tol_nfeat})",
-        ))
+        plt.scatter(
+            tol_nfeat,
+            tol_score,
+            color="green",
+            s=70,
+            label=f"Selected ({metric_name}={tol_score:.4f}, n={tol_nfeat})"
+        )
+
+    plt.xlabel("Selected features")
+    plt.ylabel(metric_name)
+    plt.title(f"RFECV – {model_name}")
 
     tickvals = [1, int(best_nfeat), int(total_features)]
     if tol_nfeat is not None:
         tickvals.append(int(tol_nfeat))
     tickvals = sorted(set(tickvals))
+    plt.xticks(tickvals)
 
-    fig.update_layout(
-        width=1000,
-        height=650,
-        margin=dict(l=90, r=40, t=100, b=80),
-        title=f"RFECV – {model_name}",
-        yaxis_title=metric_name,
-        xaxis=dict(
-            title="Selected features",
-            range=[1, total_features + 1],
-            tickmode="array",
-            tickvals=tickvals,
-        ),
-        font=dict(family="Arial", size=12),
-        template="plotly_white",
-    )
+    plt.grid(True, linestyle="--", alpha=0.4)
+    plt.legend()
 
+    plt.tight_layout()
+
+    # Save
     if output_dir is not None:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        out_path = output_dir / f"{model_name}_RFECV.svg"
-        fig.write_image(str(out_path), format="svg")
-        print(f"[SAVED] RFECV plot → {out_path}")
 
-    return fig
+        out_svg = output_dir / f"{model_name}_RFECV.svg"
+        plt.savefig(out_svg)  
+
+        print(f"[SAVED] RFECV → {out_svg}")
+
+    return plt.gcf()
 
 
 # -------------------------------------------------------------------

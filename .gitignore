@@ -3,3 +3,8 @@ __pycache__/
 *.py[cod]
 /data/
 /outputs/
+*.egg-info/
+build/
+dist/
+__pycache__/
+*.pyc
