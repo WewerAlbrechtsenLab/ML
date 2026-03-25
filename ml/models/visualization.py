@@ -6,8 +6,6 @@ import matplotlib.pyplot as plt
 from matplotlib import rcParams
 from matplotlib.colors import LinearSegmentedColormap
 from sklearn.metrics import ConfusionMatrixDisplay
-from plotly.subplots import make_subplots
-import plotly.graph_objects as go
 
 # -------------------------------------------------------------------
 # GLOBAL SETTINGS FOR EDITABLE TEXT
@@ -96,76 +94,66 @@ def plot_confusion(
 
 
 # -------------------------------------------------------------------
-# BUTTERFLY PLOT (PLOTLY)
+# BUTTERFLY PLOT
 # -------------------------------------------------------------------
 def butterfly_plot(df, var1, var2, var3, error1, error2, group="model"):
+    n = len(df)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, n * 1.5))
+    fig.subplots_adjust(wspace=0, left=0.25)  # left margin for labels
+
+    y = np.arange(n)
+    height = 0.5
+    labels = df[group].tolist()
+
+    # Left plot (MCC) - reversed x axis
+    ax1.barh(y, df[var1], height=height, color="#4472c4",
+             xerr=[np.zeros(n), df[error1]], capsize=3,
+             error_kw=dict(ecolor="black", elinewidth=1))
+    ax1.set_xlim(1, 0)
+    ax1.set_xlabel("Matthews Correlation Coefficient")
+    ax1.xaxis.set_label_position("top")
+    ax1.xaxis.tick_top()
+    ax1.set_yticks(y)
+    ax1.set_yticklabels(labels, fontsize=10)
+    ax1.yaxis.set_tick_params(length=0)
+
+    # values inside bars
+    for i, val in enumerate(df[var1]):
+        ax1.text(val / 2, i, f"{val:.3f}", ha="center", va="center",
+                 color="white", fontsize=10)
+
+    # Right plot (AUROC)
+    ax2.barh(y, df[var2], height=height, color="#ed7d31",
+             xerr=[np.zeros(n), df[error2]], capsize=3,
+             error_kw=dict(ecolor="black", elinewidth=1))
+    ax2.set_xlabel("AUROC")
+    ax2.xaxis.set_label_position("top")
+    ax2.xaxis.tick_top()
+    ax2.set_ylim(ax1.get_ylim())
+    ax2.set_yticks(y)
+    ax2.set_yticklabels([])
     
-    fig = make_subplots(
-        rows=1,
-        cols=2,
-        specs=[[{}, {}]],
-        shared_xaxes=False,
-        shared_yaxes=True,
-        horizontal_spacing=0
-    )
 
-    fig.add_trace(
-        go.Bar(
-            x=df[var1],
-            y=df[group],
-            text=df[var1].round(4),
-            error_x=dict(type="data", array=df[error1], arrayminus=np.zeros(len(df))),
-            textposition="inside",
-            orientation="h",
-            width=0.7,
-            showlegend=False,
-            marker_color="#4472c4",
-        ),
-        row=1,
-        col=1,
-    )
 
-    fig.add_trace(
-        go.Bar(
-            x=df[var2],
-            y=df[group],
-            text=df[var2].round(4),
-            error_x=dict(type="data", array=df[error2], arrayminus=np.zeros(len(df))),
-            textposition="inside",
-            orientation="h",
-            width=0.7,
-            showlegend=False,
-            marker_color="#ed7d31",
-        ),
-        row=1,
-        col=2,
-    )
+    # values inside bars
+    for i, val in enumerate(df[var2]):
+        ax2.text(val / 2, i, f"{val:.3f}", ha="center", va="center",
+                 color="white", fontsize=10)
 
-    fig.update_xaxes(
-        title_text="Matthews Correlation Coefficient",
-        row=1,
-        col=1,
-        range=[1, 0],
-        side="top"
-    )
-    fig.update_xaxes(
-        title_text="AUROC",
-        row=1,
-        col=2,
-        side="top"
-    )
+    # Styling
+    for ax in [ax1, ax2]:
+        ax.spines["top"].set_visible(False)
+        ax.spines["bottom"].set_visible(False)
+        ax.spines["left"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.tick_params(axis="x", which="both", bottom=False)
+        ax.set_facecolor("white")
+        ax.grid(False)
 
-    fig.update_layout(
-        width=800,
-        height=700,
-        title_x=0.5,
-        template="plotly_white",
-        font=dict(family="Arial", size=12),
-    )
+    fig.patch.set_facecolor("white")
+    plt.rcParams["font.family"] = "Arial"
 
     return fig
-
-
 # -------------------------------------------------------------------
 # FEATURE STABILITY TABLE
 # -------------------------------------------------------------------
