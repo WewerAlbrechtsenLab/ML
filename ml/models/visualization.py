@@ -1,24 +1,13 @@
-from __future__ import annotations
-
 import json
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib import rcParams
 from matplotlib.colors import LinearSegmentedColormap
 from sklearn.metrics import ConfusionMatrixDisplay
-from sklearn.feature_selection import RFECV
-
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
-
-try:
-    from IPython.display import display  # type: ignore
-except Exception:
-    display = None  # type: ignore
-
 
 # -------------------------------------------------------------------
 # GLOBAL SETTINGS FOR EDITABLE TEXT
@@ -36,10 +25,6 @@ def set_editable_text_defaults(font_family: str = "Arial", font_size: int = 12):
     # Better editable text in PDF/PS
     rcParams["pdf.fonttype"] = 42
     rcParams["ps.fonttype"] = 42
-
-
-# apply once globally
-set_editable_text_defaults()
 
 
 # -------------------------------------------------------------------

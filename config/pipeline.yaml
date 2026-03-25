@@ -41,8 +41,9 @@ model_registry:
 search_spaces:
   logistic_regression:
     C: [0.1, 0.5, 1.0]
-    solver: [liblinear, saga]
-    penalty: [l1, l2]
+    solver: [saga]
+    l1_ratio: [0 , 0.2, 0.5, 1]
+    
   decision_tree:
     criterion: [gini, entropy]
     splitter: [best, random]

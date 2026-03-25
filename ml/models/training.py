@@ -1,6 +1,3 @@
-from __future__ import annotations
-
-from typing import Any, Dict, List, Tuple
 import joblib
 import numpy as np
 import pandas as pd
@@ -9,7 +6,6 @@ import json
 from sklearn.base import clone
 from sklearn.metrics import confusion_matrix, get_scorer, roc_curve
 from sklearn.model_selection import StratifiedKFold, RandomizedSearchCV
-from sklearn.preprocessing import LabelEncoder
 from sklearn.feature_selection import RFECV, RFE
 
 from ml.models.metrics import scoring_map
