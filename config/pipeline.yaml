@@ -1,7 +1,7 @@
 data_path: None
 task_type: binary
 
-outer_splits: 2
+outer_splits: 5
 inner_splits: 2
 random_state: 42
 positive_label: 0
@@ -18,7 +18,7 @@ model_registry:
   logistic_regression:
     classname: sklearn.linear_model.LogisticRegression
     params:
-      max_iter: 5000
+      max_iter: 8000
       random_state: 42
   decision_tree:
     classname: sklearn.tree.DecisionTreeClassifier

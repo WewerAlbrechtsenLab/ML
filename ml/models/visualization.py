@@ -6,6 +6,10 @@ import matplotlib.pyplot as plt
 from matplotlib import rcParams
 from matplotlib.colors import LinearSegmentedColormap
 from sklearn.metrics import ConfusionMatrixDisplay
+from ml.models.metrics import scoring_map
+from sklearn.model_selection import learning_curve, StratifiedKFold
+import joblib
+from sklearn.base import clone
 
 # -------------------------------------------------------------------
 # GLOBAL SETTINGS FOR EDITABLE TEXT
@@ -96,9 +100,56 @@ def plot_confusion(
 # -------------------------------------------------------------------
 # BUTTERFLY PLOT
 # -------------------------------------------------------------------
-def butterfly_plot(df, var1, var2, var3, error1, error2, group="model"):
+def butterfly_plot(
+    df,
+    var1='mean_mcc',
+    var2='mean_roc_auc',
+    error1='std_mcc',
+    error2='std_roc_auc',
+    group='model_n_features',
+    config=None,
+    output_dir='outputs',
+    filename=None,
+    figures_subdir="figures",
+    save_format="png"
+):
+    """
+    Two-sided ("butterfly") horizontal bar chart comparing two metrics
+    (e.g. MCC vs. AUROC) side by side per group (e.g. per model), with
+    error bars, and save it to disk.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Must contain `group`, `var1`, `var2`, `error1`, `error2` columns.
+    var1, var2 : str
+        Column names for the left- and right-hand metric values.
+    error1, error2 : str
+        Column names for the (upper) error bar for each metric.
+    group : str, default "model"
+        Column used for the row labels (shared y-axis between both panels).
+    config : PipelineConfig, optional
+        Used to default `output_dir` if not passed directly.
+    output_dir : str or Path, optional
+        Where to save the figure. Defaults to config.output_dir/figures.
+    filename : str, optional
+        Output filename. Defaults to "butterfly_{var1}_vs_{var2}.png".
+    figures_subdir : str, default "figures"
+        Sub-folder under output_dir where the PNG is saved (only used when
+        `output_dir` is None and resolved from `config`).
+    save_format : {"png", "svg", "pdf"}, default "png"
+
+    Returns
+    -------
+    out_path : Path
+        Path to the saved PNG.
+    fig : matplotlib.figure.Figure
+        The created figure, in case you want to display or tweak it further.
+    """
+    set_editable_text_defaults()
+
     n = len(df)
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, n * 1.5))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, n * 1.5))
     fig.subplots_adjust(wspace=0, left=0.25)  # left margin for labels
 
     y = np.arange(n)
@@ -107,24 +158,24 @@ def butterfly_plot(df, var1, var2, var3, error1, error2, group="model"):
 
     # Left plot (MCC) - reversed x axis
     ax1.barh(y, df[var1], height=height, color="#4472c4",
-             xerr=[np.zeros(n), df[error1]], capsize=3,
+             xerr=[np.zeros(n), df[error1]], capsize=5,
              error_kw=dict(ecolor="black", elinewidth=1))
     ax1.set_xlim(1, 0)
     ax1.set_xlabel("Matthews Correlation Coefficient")
     ax1.xaxis.set_label_position("top")
     ax1.xaxis.tick_top()
     ax1.set_yticks(y)
-    ax1.set_yticklabels(labels, fontsize=10)
+    ax1.set_yticklabels(labels, fontsize=12)
     ax1.yaxis.set_tick_params(length=0)
 
     # values inside bars
     for i, val in enumerate(df[var1]):
         ax1.text(val / 2, i, f"{val:.3f}", ha="center", va="center",
-                 color="white", fontsize=10)
+                 color="white", fontsize=12)
 
     # Right plot (AUROC)
     ax2.barh(y, df[var2], height=height, color="#ed7d31",
-             xerr=[np.zeros(n), df[error2]], capsize=3,
+             xerr=[np.zeros(n), df[error2]], capsize=5,
              error_kw=dict(ecolor="black", elinewidth=1))
     ax2.set_xlabel("AUROC")
     ax2.xaxis.set_label_position("top")
@@ -132,13 +183,11 @@ def butterfly_plot(df, var1, var2, var3, error1, error2, group="model"):
     ax2.set_ylim(ax1.get_ylim())
     ax2.set_yticks(y)
     ax2.set_yticklabels([])
-    
-
 
     # values inside bars
     for i, val in enumerate(df[var2]):
         ax2.text(val / 2, i, f"{val:.3f}", ha="center", va="center",
-                 color="white", fontsize=10)
+                 color="white", fontsize=12)
 
     # Styling
     for ax in [ax1, ax2]:
@@ -153,6 +202,20 @@ def butterfly_plot(df, var1, var2, var3, error1, error2, group="model"):
     fig.patch.set_facecolor("white")
     plt.rcParams["font.family"] = "Arial"
 
+    if output_dir is None:
+        output_dir = Path(config.output_dir) / figures_subdir if config is not None else Path(".")
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if filename is None:
+        filename = f"butterfly_{var1}_vs_{var2}"
+    filename = f"{filename}.{save_format}"
+
+    out_path = output_dir / filename
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    print(f"[SAVED] Butterfly plot saved to: {out_path}")
     return fig
 # -------------------------------------------------------------------
 # FEATURE STABILITY TABLE
@@ -265,7 +328,6 @@ def plot_feature_stability(
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib import rcParams
 
 
 def plot_rfecv_curve(
@@ -509,3 +571,172 @@ def plot_roc_curves(
 
     fig.tight_layout()
     return fig
+
+# -------------------------------------------------------------------
+# Learning CURVES
+# -------------------------------------------------------------------
+def plot_learning_curve(
+    model_name,
+    X,
+    y,
+    model_path=None,
+    final_models=None,
+    models=None,
+    config=None,
+    cv=None,
+    train_sizes=None,
+    scoring=None,
+    output_dir=None,
+):
+    """
+    Plot train vs. cross-validation score as a function of training set size
+    for a single, selected model.
+
+    Pass ONE of:
+      - `model_path`: path to a saved `<model_name>.joblib` package (as
+        written by nested_cross_validate_models()) - loads the tuned
+        estimator + selected features from disk, no training run needed
+        in memory.
+      - `final_models`: the dict returned by nested_cross_validate_models()
+        (uses the tuned estimator + selected features for `model_name`).
+      - `models`: the raw {model_name: base_estimator} dict (uses an
+        untuned clone and all features in X).
+
+    Parameters
+    ----------
+    model_name : str
+        Key identifying the model. Used to look it up in `final_models` /
+        `models`, and (if `model_path` is a directory) to build the
+        `<model_name>.joblib` filename.
+    X, y : DataFrame / array-like, Series / array-like
+        Full dataset to draw training subsets from.
+    model_path : str or Path, optional
+        Either a direct path to a saved joblib package (e.g.
+        "outputs/saved_models/logistic_regression.joblib"), or a directory
+        containing "<model_name>.joblib" (e.g. "outputs/saved_models").
+        Loaded with joblib.load(); expects the same
+        {"model", "feature_names", ...} package that nested_cross_validate_
+        models() saves. Takes priority over `final_models` / `models`.
+    final_models : dict, optional
+        Output of nested_cross_validate_models(); entries look like
+        {"model": estimator, "mask": mask, "feature_names": [...]}.
+    models : dict, optional
+        Fallback source of an (untuned) estimator if neither model_path nor
+        final_models is given.
+    config : PipelineConfig, optional
+        Used to default cv splits, scoring, random_state, and output_dir.
+    cv : cross-validation splitter, optional
+        Defaults to a StratifiedKFold built from config.outer_splits.
+    train_sizes : array-like, optional
+        Fractions (or absolute counts) of the training set to use.
+        Defaults to np.linspace(0.1, 1.0, 10).
+    scoring : str or callable, optional
+        Defaults to the primary metric from scoring_map(config.task_type).
+    output_dir : str or Path, optional
+        Where to save the figure. Defaults to config.output_dir/figures.
+
+    Returns
+    -------
+    out_path : Path
+        Path to the saved PNG.
+    (train_sizes_abs, train_scores, test_scores) : tuple of np.ndarray
+        Raw learning_curve() output, in case you want it programmatically.
+    """
+
+    if train_sizes is None:
+        train_sizes = np.linspace(0.1, 1.0, 10)
+
+    # ---- Resolve estimator (+ feature subset) ----
+    if model_path is not None:
+        model_path = Path(model_path)
+        if model_path.is_dir():
+            model_path = model_path / f"{model_name}.joblib"
+        if not model_path.exists():
+            raise FileNotFoundError(f"No saved model found at {model_path}")
+
+        package = joblib.load(model_path)
+        estimator = clone(package["model"])
+        feature_names = package.get("feature_names")
+        if feature_names is not None:
+            X = X.loc[:, feature_names]
+    elif final_models is not None and model_name in final_models:
+        package = final_models[model_name]
+        estimator = clone(package["model"])
+        feature_names = package.get("feature_names")
+        if feature_names is not None:
+            X = X.loc[:, feature_names]
+    elif models is not None and model_name in models:
+        estimator = clone(models[model_name])
+    else:
+        raise ValueError(
+            f"Could not resolve an estimator for '{model_name}'. "
+            "Pass model_path, or a final_models/models dict that contains it."
+        )
+
+    # ---- Resolve cv / scoring / output_dir from config if not given ----
+    random_state = getattr(config, "random_state", None) if config is not None else None
+
+    if cv is None:
+        # Match `outer_cv` from nested_cross_validate_models(), since that's
+        # the scheme that actually produces every reported score in this
+        # pipeline (leaderboard means/stds, fold_history, etc.). `inner_cv`
+        # is only ever used for hyperparameter search / feature selection,
+        # so defaulting to it here would make this curve's CV score
+        # incomparable to the rest of the pipeline's numbers.
+        n_splits = getattr(config, "outer_splits", 5) if config is not None else 5
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+
+    if scoring is None and config is not None:
+        scoring_dict = scoring_map(config.task_type)
+        scoring = next(iter(scoring_dict.values()))
+
+    if output_dir is None:
+        output_dir = Path(config.output_dir) / "figures" if config is not None else Path(".")
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # ---- Compute ----
+    train_sizes_abs, train_scores, test_scores = learning_curve(
+        estimator,
+        X,
+        y,
+        cv=cv,
+        train_sizes=train_sizes,
+        scoring=scoring,
+        n_jobs=-1,
+        shuffle=True,
+        random_state=random_state,
+    )
+
+    train_mean, train_std = train_scores.mean(axis=1), train_scores.std(axis=1)
+    test_mean, test_std = test_scores.mean(axis=1), test_scores.std(axis=1)
+
+    # ---- Plot ----
+    fig, ax = plt.subplots(figsize=(7, 5))
+
+    ax.plot(train_sizes_abs, train_mean, "o-", color="tab:blue", label="Training score")
+    ax.fill_between(
+        train_sizes_abs, train_mean - train_std, train_mean + train_std,
+        alpha=0.15, color="tab:blue",
+    )
+
+    ax.plot(train_sizes_abs, test_mean, "o-", color="tab:orange", label="Cross-validation score")
+    ax.fill_between(
+        train_sizes_abs, test_mean - test_std, test_mean + test_std,
+        alpha=0.15, color="tab:orange",
+    )
+
+    ax.set_xlabel("Training examples")
+    ax.set_ylabel(scoring if isinstance(scoring, str) else "Score")
+    ax.set_title(f"Learning Curve \u2014 {model_name}")
+    ax.legend(loc="best")
+    ax.grid(alpha=0.3)
+
+    out_path = output_dir / f"learning_curve_{model_name}.png"
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    print(f"[SAVED] Learning curve saved to: {out_path}")
+
+    return fig
+
