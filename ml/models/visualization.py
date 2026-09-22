@@ -442,7 +442,7 @@ def plot_rfecv_curve(
         out_svg = output_dir / f"{model_name}_RFECV.svg"
         plt.savefig(out_svg)  
 
-        print(f"[SAVED] RFECV → {out_svg}")
+        print(f"[SAVED] RFECV -> {out_svg}")
 
     return plt.gcf()
 
@@ -571,6 +571,182 @@ def plot_roc_curves(
 
     fig.tight_layout()
     return fig
+
+
+# -------------------------------------------------------------------
+# AUROC 95% CONFIDENCE INTERVAL (across outer CV folds)
+# -------------------------------------------------------------------
+def auroc_confidence_interval(folds_json_path, model_name, confidence=0.95):
+    """
+    95% CI for AUROC computed directly from the per-fold `test_roc_auc`
+    values stored by nested_cross_validate_models() (one value per outer
+    stratified CV fold), using a t-distribution over the folds
+    (mean +/- t_crit * SEM, df = n_folds - 1).
+
+    Returns a dict with `aucs`, `n_folds`, `mean`, `sem`, `ci_low`, `ci_high`.
+    """
+    from scipy import stats
+
+    folds_json_path = Path(folds_json_path)
+    fold_history = json.loads(folds_json_path.read_text())
+
+    if model_name not in fold_history:
+        raise KeyError(f"Model '{model_name}' not found in fold history")
+
+    aucs = np.array(
+        [fold["test_roc_auc"] for fold in fold_history[model_name] if "test_roc_auc" in fold],
+        dtype=float,
+    )
+    n = len(aucs)
+    if n < 2:
+        raise ValueError(f"Need at least 2 folds with test_roc_auc for model '{model_name}', got {n}")
+
+    mean_auc = float(aucs.mean())
+    sem = float(aucs.std(ddof=1) / np.sqrt(n))
+    t_crit = float(stats.t.ppf(1 - (1 - confidence) / 2, df=n - 1))
+    margin = t_crit * sem
+
+    return {
+        "aucs": aucs,
+        "n_folds": n,
+        "mean": mean_auc,
+        "sem": sem,
+        "ci_low": mean_auc - margin,
+        "ci_high": min(mean_auc + margin, 1.0),
+        "confidence": confidence,
+    }
+
+
+# -------------------------------------------------------------------
+# CALIBRATION CURVE
+# -------------------------------------------------------------------
+def plot_calibration_curve(
+    y_true,
+    y_prob,
+    n_bins=10,
+    strategy="quantile", # 'uniform' for fixed width bins easier to interpret, 'quantile' for equal number of samples per bin
+    title="Calibration curve",
+    label="Model",
+):
+    """
+    Reliability diagram (observed vs. predicted probability) with a
+    predicted-probability histogram beneath it. `y_true`/`y_prob` are
+    typically the pooled out-of-fold predictions from
+    load_outer_fold_predictions() (its `y_true`/`prob` columns), so the
+    curve reflects genuinely held-out predictions rather than in-sample fit.
+
+    The reliability curve itself is drawn by sklearn's `CalibrationDisplay`.
+    The legend reports the Brier score (mean squared error between `y_prob`
+    and `y_true`; lower is better).
+    """
+    from sklearn.calibration import CalibrationDisplay
+    from sklearn.metrics import brier_score_loss
+
+    set_editable_text_defaults()
+
+    y_true = np.asarray(y_true, dtype=float)
+    y_prob = np.asarray(y_prob, dtype=float)
+
+    brier = brier_score_loss(y_true, y_prob)
+
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(6, 7), sharex=True,
+        gridspec_kw={"height_ratios": [3, 1]},
+    )
+
+    CalibrationDisplay.from_predictions(
+        y_true, y_prob, n_bins=n_bins, strategy=strategy,
+        name=f"{label} (Brier = {brier:.3f})",
+        ax=ax1, color="#4472c4", marker="o",
+    )
+
+    ax1.set_xlabel("")
+    ax1.set_ylabel("Observed frequency")
+    ax1.set_title(title)
+    ax1.legend(loc="upper left")
+    ax1.grid(alpha=0.3)
+    plt.setp(ax1.get_xticklabels(), visible=False)
+
+    ax2.hist(y_prob, bins=n_bins, range=(0, 1), color="#4472c4", alpha=0.7)
+    ax2.set_xlabel("Predicted probability")
+    ax2.set_ylabel("Count")
+    ax2.grid(alpha=0.3)
+
+    fig.tight_layout()
+    return fig
+
+
+# -------------------------------------------------------------------
+# DECISION CURVE ANALYSIS (DCA)
+# -------------------------------------------------------------------
+def decision_curve_analysis(y_true, y_prob, thresholds=None):
+    """
+    Net benefit of the model vs. "treat all" / "treat none" strategies
+    across a range of threshold (risk) probabilities, following
+    Vickers & Elkin, Med Decis Making (2006).
+
+    Returns a DataFrame with columns: threshold, net_benefit_model,
+    net_benefit_all, net_benefit_none.
+    """
+    y_true = np.asarray(y_true, dtype=float)
+    y_prob = np.asarray(y_prob, dtype=float)
+
+    if thresholds is None:
+        thresholds = np.linspace(0.01, 0.99, 99)
+    thresholds = np.asarray(thresholds, dtype=float)
+
+    n = len(y_true)
+    prevalence = y_true.mean()
+
+    rows = []
+    for pt in thresholds:
+        predicted_positive = y_prob >= pt
+        tp = np.sum(predicted_positive & (y_true == 1))
+        fp = np.sum(predicted_positive & (y_true == 0))
+
+        odds = pt / (1 - pt)
+        rows.append({
+            "threshold": pt,
+            "net_benefit_model": (tp / n) - (fp / n) * odds,
+            "net_benefit_all": prevalence - (1 - prevalence) * odds,
+            "net_benefit_none": 0.0,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def plot_decision_curve(
+    y_true,
+    y_prob,
+    thresholds=None,
+    title="Decision curve analysis",
+    label="Model",
+):
+    """
+    Plot net benefit of the model against "treat all" and "treat none"
+    across threshold probabilities. `y_true`/`y_prob` are typically the
+    pooled out-of-fold predictions from load_outer_fold_predictions().
+    """
+    set_editable_text_defaults()
+
+    dca = decision_curve_analysis(y_true, y_prob, thresholds=thresholds)
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.plot(dca["threshold"], dca["net_benefit_model"], color="#4472c4", linewidth=2, label=label)
+    ax.plot(dca["threshold"], dca["net_benefit_all"], color="#ed7d31", linestyle="--", label="Treat all")
+    ax.plot(dca["threshold"], dca["net_benefit_none"], color="grey", linestyle=":", label="Treat none")
+
+    ymax = max(dca["net_benefit_all"].max(), dca["net_benefit_model"].max()) + 0.05
+    ax.set_ylim(-0.02, ymax)
+    ax.set_xlabel("Threshold probability")
+    ax.set_ylabel("Net benefit")
+    ax.set_title(title)
+    ax.legend(loc="upper right")
+    ax.grid(alpha=0.3)
+
+    fig.tight_layout()
+    return fig
+
 
 # -------------------------------------------------------------------
 # Learning CURVES

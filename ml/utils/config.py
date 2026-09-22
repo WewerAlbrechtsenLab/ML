@@ -28,9 +28,12 @@ class PipelineConfig:
     feature_selection: Literal[
         "none",
         "rfecv",
-        "linear_model",    
+        "linear_model",
     ]
     feature_score_tolerance: float | None = None # when rfecv used
+    rfecv_step: int | float = 1  # RFECV/RFE step size - int removes that many features per
+    # iteration, float in (0,1) removes that fraction of remaining features. Default (1) matches
+    # existing behavior; set e.g. 0.05 to make RFECV tractable on larger feature sets.
 
     # when linear models used
     linear_formula: Optional[str] = None    # example binary: y ~ C(target, Treatment(reference='control')) + age + C(sex)  or example multiclass "y ~ C(target, Treatment(reference='classA')) + age + C(sex)"

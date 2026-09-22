@@ -9,8 +9,8 @@ import pandas as pd
 def scoring_map(task_type: str) -> Dict[str, str]:
     if task_type == "binary":
         return {
-            "f1_weighted": "f1_weighted",
             "mcc": "matthews_corrcoef",
+            "f1_weighted": "f1_weighted",
             "roc_auc": "roc_auc",
         }
     return {

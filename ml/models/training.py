@@ -7,6 +7,7 @@ from sklearn.base import clone
 from sklearn.metrics import confusion_matrix, get_scorer, roc_curve
 from sklearn.model_selection import StratifiedKFold, RandomizedSearchCV
 from sklearn.feature_selection import RFECV, RFE
+from sklearn.utils.class_weight import compute_sample_weight
 
 from ml.models.metrics import scoring_map
 from ml.utils.config import PipelineConfig
@@ -145,7 +146,7 @@ def compute_roc(estimator, X, y, classes, task_type):
 # RFECV 
 # -----------------------------------------------------------
 
-def run_rfecv_once(X, y, tuned_estimator, scoring, inner_cv, batches=None):
+def run_rfecv_once(X, y, tuned_estimator, scoring, inner_cv, batches=None, step=1, sample_weight=None):
     pre = None
     if pre is not None:
         X_local = clone(pre).fit_transform(X, y, batch_labels=batches)
@@ -157,10 +158,11 @@ def run_rfecv_once(X, y, tuned_estimator, scoring, inner_cv, batches=None):
             estimator=clone(tuned_estimator),
             cv=inner_cv,
             scoring=scoring,
-            step=1,
+            step=step,
             min_features_to_select=1,
         )
-        rfecv.fit(X_local, y)
+        fit_kwargs = {} if sample_weight is None else {"sample_weight": sample_weight}
+        rfecv.fit(X_local, y, **fit_kwargs)
         mask = np.asarray(rfecv.support_, dtype=bool)
         return mask, rfecv
 
@@ -169,7 +171,7 @@ def run_rfecv_once(X, y, tuned_estimator, scoring, inner_cv, batches=None):
         mask = np.ones(X.shape[1], dtype=bool)
         return mask, None
 
-def select_mask_within_tolerance(rfecv: RFECV, X, y, tolerance: float):
+def select_mask_within_tolerance(rfecv: RFECV, X, y, tolerance: float, sample_weight=None):
     """
     Select the SMALLEST feature set whose mean CV score is within `tolerance`
     of the best score, then refit RFE on the FULL dataset to obtain
@@ -201,7 +203,8 @@ def select_mask_within_tolerance(rfecv: RFECV, X, y, tolerance: float):
     step=1,
 )
 
-    rfe.fit(X, y)
+    fit_kwargs = {} if sample_weight is None else {"sample_weight": sample_weight}
+    rfe.fit(X, y, **fit_kwargs)
     mask = rfe.support_
 
     return mask, {
@@ -342,7 +345,7 @@ def run_linear_models(
         selected_features = list(X.columns)
         print(
         "[Linear-FS][FALLBACK] "
-        "No features met stability rule → using ALL features"
+        "No features met stability rule -> using ALL features"
     )
 
     # -------------------------
@@ -379,7 +382,7 @@ def run_linear_models(
 # Hyperparameter search
 # -----------------------------------------------------------
 
-def run_hp_search(X, y, estimator, config, scoring, primary_metric, inner_cv, model_name):
+def run_hp_search(X, y, estimator, config, scoring, primary_metric, inner_cv, model_name, sample_weight=None):
     param_grid = config.search_spaces.get(model_name, {})
 
     search = RandomizedSearchCV(
@@ -391,7 +394,8 @@ def run_hp_search(X, y, estimator, config, scoring, primary_metric, inner_cv, mo
         n_jobs=-1,
         random_state=config.random_state,
     )
-    search.fit(X, y)
+    fit_kwargs = {} if sample_weight is None else {"sample_weight": sample_weight}
+    search.fit(X, y, **fit_kwargs)
     return search.best_estimator_, search.best_params_
 
 
@@ -446,6 +450,12 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                 Xtr, Xte = X.iloc[train_idx], X.iloc[test_idx]
                 ytr, yte = y.iloc[train_idx], y.iloc[test_idx]
 
+                # Class-imbalance weighting, applied uniformly to every model (including
+                # ones like GradientBoostingClassifier with no class_weight constructor
+                # param) via sample_weight instead - recomputed per fold since the class
+                # balance can shift slightly between folds.
+                sw_tr = compute_sample_weight("balanced", ytr)
+
                 tuned_estimator, best_params = run_hp_search(
                     Xtr, ytr,
                     base_estimator,
@@ -454,6 +464,7 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                     primary_metric,
                     inner_cv,
                     model_name,
+                    sample_weight=sw_tr,
                 )
                 print(f"[HP-SEARCH] Best params: {best_params}")
 
@@ -463,7 +474,9 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                         tuned_estimator,
                         scoring[primary_metric],
                         inner_cv,
-                        batches=None
+                        batches=None,
+                        step=getattr(config, "rfecv_step", 1),
+                        sample_weight=sw_tr,
                     )
    
                     selected = X.columns[mask].tolist()
@@ -506,7 +519,7 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                     selected_count = len(selected)
                     print(f"[NO SELECTION] Using all {selected_count} features")
 
-                tuned_estimator = clone(tuned_estimator).fit(Xtr, ytr)
+                tuned_estimator = clone(tuned_estimator).fit(Xtr, ytr, sample_weight=sw_tr)
                 y_pred = tuned_estimator.predict(Xte)
 
                 classes = list(tuned_estimator.classes_)
@@ -543,6 +556,8 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
 
 
             # -------- FINAL MODEL --------
+            sw_full = compute_sample_weight("balanced", y)
+
             tuned_estimator, final_params = run_hp_search(
                 X, y,
                 base_estimator,
@@ -551,6 +566,7 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                 primary_metric,
                 inner_cv,
                 model_name,
+                sample_weight=sw_full,
             )
             print(
                 f"\n---[DEPLOYMENT MODEL | HP-SEARCH] "
@@ -565,6 +581,8 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                     scoring[primary_metric],
                     inner_cv,
                     batches=None,
+                    step=getattr(config, "rfecv_step", 1),
+                    sample_weight=sw_full,
                 )
 
                 # RFECV supported + tolerance enabled
@@ -573,7 +591,8 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
                         rfecv=selector,
                         X=X,
                         y=y,
-                        tolerance=config.feature_score_tolerance
+                        tolerance=config.feature_score_tolerance,
+                        sample_weight=sw_full,
                     )
 
                     print(
@@ -626,7 +645,7 @@ def nested_cross_validate_models(models, X, y, config: PipelineConfig):
             
             X_final = X.loc[:, mask]
             features = X_final.columns.tolist()
-            final_model = clone(tuned_estimator).fit(X_final, y)
+            final_model = clone(tuned_estimator).fit(X_final, y, sample_weight=sw_full)
             #final_model.label_encoder_ = le
             final_models[model_name] = (final_model, mask)
 

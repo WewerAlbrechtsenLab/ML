@@ -25,7 +25,7 @@ def inspect_hyperparameters(models: dict, config: PipelineConfig):
     print("\n===== MODEL & HYPERPARAMETER CHECK =====\n")
 
     for model_name, estimator in models.items():
-        print(f"• Model: {model_name}")
+        print(f"- Model: {model_name}")
         print(f"  Estimator: {estimator.__class__.__name__}")
 
         grid = search_spaces.get(model_name, {})
@@ -51,9 +51,29 @@ def inspect_hyperparameters(models: dict, config: PipelineConfig):
     print("===== END CHECK =====\n")
 
 
+def _enable_sample_weight_routing(estimator: BaseEstimator) -> BaseEstimator:
+    """
+    Requests sample_weight at fit time (for class-imbalance weighting) and explicitly
+    declines it at score time (so held-out evaluation metrics stay unweighted/real-world),
+    for every model uniformly - including ones like GradientBoostingClassifier that have
+    no class_weight constructor param but do accept sample_weight in fit(). No-ops (via
+    try/except) for the rare estimator that doesn't support fit/score request metadata.
+    """
+    try:
+        estimator.set_fit_request(sample_weight=True)
+    except (TypeError, ValueError):
+        pass
+    try:
+        estimator.set_score_request(sample_weight=False)
+    except (TypeError, ValueError):
+        pass
+    return estimator
+
+
 def build_models(config: PipelineConfig) -> Dict[str, BaseEstimator]:
     if not config.model_registry:
-        return build_default_registry(config.task_type)
+        models = build_default_registry(config.task_type)
+        return {name: _enable_sample_weight_routing(est) for name, est in models.items()}
 
     models: Dict[str, BaseEstimator] = {}
     for name, spec in config.model_registry.items():
@@ -62,5 +82,5 @@ def build_models(config: PipelineConfig) -> Dict[str, BaseEstimator]:
         if not class_path:
             raise ValueError(f"Model registry entry '{name}' is missing 'classname'")
         estimator_cls = _import_from_path(class_path)
-        models[name] = estimator_cls(**params)
+        models[name] = _enable_sample_weight_routing(estimator_cls(**params))
     return models
